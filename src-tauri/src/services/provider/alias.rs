@@ -12,6 +12,7 @@
 use crate::config::get_app_config_dir;
 use crate::error::AppError;
 use crate::provider::Provider;
+use crate::services::provider::sanitize_claude_settings_for_live;
 use indexmap::IndexMap;
 use std::collections::HashSet;
 use std::env;
@@ -33,7 +34,7 @@ pub fn generate_aliases_script(
 ) -> String {
     let mut lines = Vec::new();
     lines.push(SCRIPT_HEADER.to_string());
-    lines.push("# Each function below invokes `claude` with a specific provider's environment variables.".to_string());
+    lines.push("# Each function below invokes `claude` with a provider-specific HOME directory.".to_string());
     lines.push("# The current active provider is already mapped to the `claude` command.".to_string());
     lines.push(String::new());
 
@@ -42,10 +43,10 @@ pub fn generate_aliases_script(
     for alias_command in collect_alias_commands(providers, current_id) {
         has_any = true;
         lines.push(format!("{}() {{", alias_command.command_name));
-        for (k, v) in &alias_command.env_vars {
-            lines.push(format!("  {}={} \\", k, shell_quote(v)));
-        }
-        lines.push(r#"  claude "$@""#.to_string());
+        lines.push(format!(
+            "  HOME={} claude \"$@\"",
+            shell_quote(alias_command.home_dir.to_string_lossy().as_ref())
+        ));
         lines.push("}".to_string());
         lines.push(String::new());
     }
@@ -55,53 +56,6 @@ pub fn generate_aliases_script(
     }
 
     lines.join("\n")
-}
-
-/// Extract env vars from a Claude provider's settingsConfig.env, in a stable order.
-///
-/// Returns only non-empty values. Sensitive fields (API keys) are included as-is
-/// since the file is stored in the user's home directory.
-fn extract_env_vars(provider: &Provider) -> Vec<(String, String)> {
-    let env = match provider.settings_config.get("env") {
-        Some(e) => e,
-        None => return vec![],
-    };
-
-    let priority_keys = [
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_MODEL",
-        "ANTHROPIC_REASONING_MODEL",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    ];
-
-    let mut result = Vec::new();
-    for key in &priority_keys {
-        if let Some(val) = env.get(key).and_then(|v| v.as_str()) {
-            if !val.is_empty() {
-                result.push((key.to_string(), val.to_string()));
-            }
-        }
-    }
-
-    // Also pick up any extra keys not in the priority list
-    if let Some(obj) = env.as_object() {
-        for (k, v) in obj {
-            if priority_keys.contains(&k.as_str()) {
-                continue; // already added
-            }
-            if let Some(s) = v.as_str() {
-                if !s.is_empty() {
-                    result.push((k.clone(), s.to_string()));
-                }
-            }
-        }
-    }
-
-    result
 }
 
 /// Minimally quote a shell value: wrap in single quotes and escape embedded single quotes.
@@ -114,7 +68,8 @@ fn shell_quote(s: &str) -> String {
 #[derive(Debug, Clone)]
 struct AliasCommand {
     command_name: String,
-    env_vars: Vec<(String, String)>,
+    home_dir: PathBuf,
+    settings_json: String,
 }
 
 fn collect_alias_commands(
@@ -132,14 +87,23 @@ fn collect_alias_commands(
             _ => continue,
         };
 
-        let env_vars = extract_env_vars(provider);
-        if env_vars.is_empty() {
+        let settings = sanitize_claude_settings_for_live(&provider.settings_config);
+        let has_env = settings
+            .get("env")
+            .and_then(|value| value.as_object())
+            .is_some_and(|env| !env.is_empty());
+        if !has_env {
             continue;
         }
 
+        let Ok(settings_json) = serde_json::to_string_pretty(&settings) else {
+            continue;
+        };
+
         commands.push(AliasCommand {
             command_name: format!("claude-{alias_name}"),
-            env_vars,
+            home_dir: get_alias_home_dir(&alias_name),
+            settings_json,
         });
     }
     commands
@@ -153,10 +117,10 @@ fn generate_launcher_script(command: &AliasCommand) -> String {
         String::new(),
     ];
 
-    for (key, value) in &command.env_vars {
-        lines.push(format!("export {}={}", key, shell_quote(value)));
-    }
-
+    lines.push(format!(
+        "export HOME={}",
+        shell_quote(command.home_dir.to_string_lossy().as_ref())
+    ));
     lines.push(r#"exec claude "$@""#.to_string());
     lines.push(String::new());
     lines.join("\n")
@@ -174,6 +138,28 @@ pub fn write_aliases_file(script: &str) -> Result<PathBuf, AppError> {
 /// Get the path to the aliases file.
 pub fn get_aliases_file_path() -> PathBuf {
     get_app_config_dir().join("aliases.sh")
+}
+
+fn get_alias_homes_dir() -> PathBuf {
+    get_app_config_dir().join("alias-homes")
+}
+
+fn get_alias_home_dir(alias_name: &str) -> PathBuf {
+    get_alias_homes_dir().join(alias_name)
+}
+
+fn get_alias_claude_dir(alias_name: &str) -> PathBuf {
+    get_alias_home_dir(alias_name).join(".claude")
+}
+
+fn get_alias_settings_path(alias_name: &str) -> PathBuf {
+    get_alias_claude_dir(alias_name).join("settings.json")
+}
+
+fn real_claude_dir() -> Result<PathBuf, AppError> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| AppError::Message("无法获取 HOME 目录".to_string()))?;
+    Ok(home.join(".claude"))
 }
 
 /// Ensure the shell config file sources `~/.cc-switch/aliases.sh`.
@@ -352,11 +338,108 @@ fn cleanup_managed_launchers(dir: &Path, expected: &HashSet<String>) -> Result<(
     Ok(())
 }
 
+fn cleanup_alias_homes(dir: &Path, expected: &HashSet<String>) -> Result<(), AppError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(AppError::io(dir, err)),
+    };
+
+    for entry in entries {
+        let entry = entry.map_err(|e| AppError::io(dir, e))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if expected.contains(file_name) {
+            continue;
+        }
+
+        if path.is_dir() {
+            fs::remove_dir_all(&path).map_err(|e| AppError::io(&path, e))?;
+        } else {
+            fs::remove_file(&path).map_err(|e| AppError::io(&path, e))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_symlink(src: &Path, dst: &Path) -> Result<(), AppError> {
+    std::os::unix::fs::symlink(src, dst).map_err(|e| AppError::io(dst, e))
+}
+
+fn mirror_claude_home(alias_name: &str) -> Result<(), AppError> {
+    let source_dir = real_claude_dir()?;
+    let target_dir = get_alias_claude_dir(alias_name);
+    fs::create_dir_all(&target_dir).map_err(|e| AppError::io(&target_dir, e))?;
+
+    let entries = match fs::read_dir(&source_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(AppError::io(&source_dir, err)),
+    };
+
+    for entry in entries {
+        let entry = entry.map_err(|e| AppError::io(&source_dir, e))?;
+        let file_name = entry.file_name();
+        let Some(file_name_str) = file_name.to_str() else {
+            continue;
+        };
+        if file_name_str == "settings.json" {
+            continue;
+        }
+
+        let target = target_dir.join(&file_name);
+        if target.exists() {
+            continue;
+        }
+        create_symlink(&entry.path(), &target)?;
+    }
+
+    Ok(())
+}
+
+fn write_alias_homes(
+    providers: &IndexMap<String, Provider>,
+    current_id: &str,
+) -> Result<Vec<AliasCommand>, AppError> {
+    let commands = collect_alias_commands(providers, current_id);
+    let dir = get_alias_homes_dir();
+    fs::create_dir_all(&dir).map_err(|e| AppError::io(&dir, e))?;
+
+    let expected: HashSet<String> = commands
+        .iter()
+        .filter_map(|command| command.home_dir.file_name().and_then(|name| name.to_str()).map(str::to_string))
+        .collect();
+    cleanup_alias_homes(&dir, &expected)?;
+
+    for command in &commands {
+        let alias_name = command
+            .home_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| AppError::Message("alias home directory is invalid".to_string()))?;
+        mirror_claude_home(alias_name)?;
+
+        let settings_path = get_alias_settings_path(alias_name);
+        fs::write(&settings_path, &command.settings_json)
+            .map_err(|e| AppError::io(&settings_path, e))?;
+    }
+
+    Ok(commands)
+}
+
 fn write_alias_launchers(
     providers: &IndexMap<String, Provider>,
     current_id: &str,
 ) -> Result<(), AppError> {
-    let commands = collect_alias_commands(providers, current_id);
+    let commands = write_alias_homes(providers, current_id)?;
     let dir = alias_launcher_dir()?;
 
     let expected: HashSet<String> = commands
