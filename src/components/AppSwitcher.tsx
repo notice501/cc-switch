@@ -1,6 +1,7 @@
 import type { AppId } from "@/lib/api";
 import type { VisibleApps } from "@/types";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { writeLocalStorage } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
 interface AppSwitcherProps {
@@ -21,7 +22,7 @@ export function AppSwitcher({
 }: AppSwitcherProps) {
   const handleSwitch = (app: AppId) => {
     if (app === activeApp) return;
-    localStorage.setItem(STORAGE_KEY, app);
+    writeLocalStorage(STORAGE_KEY, app);
     onSwitch(app);
   };
   const iconSize = 20;

@@ -100,6 +100,7 @@ export function AddProviderDialog({
         settingsConfig: parsedConfig,
         icon: values.icon?.trim() || undefined,
         iconColor: values.iconColor?.trim() || undefined,
+        alias: values.alias?.trim() || undefined,
         ...(values.presetCategory ? { category: values.presetCategory } : {}),
         ...(values.meta ? { meta: values.meta } : {}),
       };

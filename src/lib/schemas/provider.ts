@@ -55,6 +55,15 @@ export const providerSchema = z.object({
   // 图标配置
   icon: z.string().optional(),
   iconColor: z.string().optional(),
+  // Shell alias（仅 Claude 供应商使用）
+  alias: z
+    .string()
+    .trim()
+    .refine(
+      (value) => value === "" || /^[a-z0-9]+(-[a-z0-9]+)*$/.test(value),
+      "Alias 只能包含小写字母、数字和连字符",
+    )
+    .optional(),
 });
 
 export type ProviderFormData = z.infer<typeof providerSchema>;

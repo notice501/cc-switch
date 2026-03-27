@@ -40,6 +40,9 @@ pub struct Provider {
     #[serde(default)]
     #[serde(rename = "inFailoverQueue")]
     pub in_failover_queue: bool,
+    /// Shell alias 名称（设置后可用 `claude-<alias>` 在终端调用此供应商）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 impl Provider {
@@ -63,6 +66,7 @@ impl Provider {
             icon: None,
             icon_color: None,
             in_failover_queue: false,
+            alias: None,
         }
     }
 }
@@ -504,6 +508,7 @@ impl UniversalProvider {
             icon: self.icon.clone(),
             icon_color: self.icon_color.clone(),
             in_failover_queue: false,
+            alias: None,
         })
     }
 
@@ -569,6 +574,7 @@ requires_openai_auth = true"#
             icon: self.icon.clone(),
             icon_color: self.icon_color.clone(),
             in_failover_queue: false,
+            alias: None,
         })
     }
 
@@ -604,6 +610,7 @@ requires_openai_auth = true"#
             icon: self.icon.clone(),
             icon_color: self.icon_color.clone(),
             in_failover_queue: false,
+            alias: None,
         })
     }
 }

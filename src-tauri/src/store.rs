@@ -13,6 +13,9 @@ impl AppState {
     pub fn new(db: Arc<Database>) -> Self {
         let proxy_service = ProxyService::new(db.clone());
 
-        Self { db, proxy_service }
+        Self {
+            db,
+            proxy_service,
+        }
     }
 }

@@ -2,10 +2,17 @@
 //!
 //! Handles provider CRUD operations, switching, and configuration management.
 
+mod alias;
 mod endpoints;
 mod gemini_auth;
 mod live;
 mod usage;
+
+// Re-export alias functions for use in commands
+pub use alias::{
+    generate_aliases_script, get_aliases_file_path, write_aliases_file,
+    ensure_shell_sourced,
+};
 
 use indexmap::IndexMap;
 use regex::Regex;
@@ -141,6 +148,20 @@ impl ProviderService {
         }
     }
 
+    fn normalize_provider_alias(app_type: &AppType, provider: &mut Provider) {
+        if !matches!(app_type, AppType::Claude) {
+            provider.alias = None;
+            return;
+        }
+
+        provider.alias = provider
+            .alias
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
+
     /// List all providers for an app type
     pub fn list(
         state: &AppState,
@@ -170,7 +191,9 @@ impl ProviderService {
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_provider_alias(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::validate_provider_alias(state, &app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
 
         // Save to database
@@ -200,6 +223,15 @@ impl ProviderService {
             write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
         }
 
+        // Refresh shell aliases when a Claude provider is added (non-fatal)
+        if matches!(app_type, AppType::Claude) {
+            if let Ok(providers) = state.db.get_all_providers(app_type.as_str()) {
+                let current_id = crate::settings::get_effective_current_provider(&state.db, &app_type)
+                    .ok().flatten().unwrap_or_default();
+                alias::refresh_aliases(&providers, &current_id);
+            }
+        }
+
         Ok(true)
     }
 
@@ -212,7 +244,9 @@ impl ProviderService {
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
+        Self::normalize_provider_alias(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        Self::validate_provider_alias(state, &app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
 
         // Save to database
@@ -285,6 +319,14 @@ impl ProviderService {
             }
         }
 
+        // Refresh shell aliases when a Claude provider is updated (non-fatal)
+        if matches!(app_type, AppType::Claude) {
+            if let Ok(providers) = state.db.get_all_providers(app_type.as_str()) {
+                let current_id = effective_current.unwrap_or_default();
+                alias::refresh_aliases(&providers, &current_id);
+            }
+        }
+
         Ok(true)
     }
 
@@ -352,7 +394,17 @@ impl ProviderService {
             ));
         }
 
-        state.db.delete_provider(app_type.as_str(), id)
+        state.db.delete_provider(app_type.as_str(), id)?;
+
+        // Refresh shell aliases when a Claude provider is deleted (non-fatal)
+        if matches!(app_type, AppType::Claude) {
+            if let Ok(providers) = state.db.get_all_providers(app_type.as_str()) {
+                let current_id = db_current.unwrap_or_default();
+                alias::refresh_aliases(&providers, &current_id);
+            }
+        }
+
+        Ok(())
     }
 
     /// Remove provider from live config only (for additive mode apps like OpenCode, OpenClaw)
@@ -500,11 +552,16 @@ impl ProviderService {
             .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
 
             // 关键修复：接管模式下切换供应商不会写回 Live 配置，
-            // 需要主动清理 Claude Live 中的“模型覆盖”字段，避免仍以旧模型名发起请求。
+            // 需要主动清理 Claude Live 中的”模型覆盖”字段，避免仍以旧模型名发起请求。
             if matches!(app_type, AppType::Claude) {
                 if let Err(e) = state.proxy_service.cleanup_claude_model_overrides_in_live() {
                     log::warn!("清理 Claude Live 模型字段失败（不影响切换结果）: {e}");
                 }
+            }
+
+            // Refresh shell aliases (Claude only; non-fatal)
+            if matches!(app_type, AppType::Claude) {
+                alias::refresh_aliases(&providers, id);
             }
 
             // Note: No Live config write, no MCP sync
@@ -601,6 +658,11 @@ impl ProviderService {
 
         // Sync MCP
         McpService::sync_all_enabled(state)?;
+
+        // Refresh shell aliases (Claude only; non-fatal)
+        if matches!(app_type, AppType::Claude) {
+            alias::refresh_aliases(providers, id);
+        }
 
         Ok(result)
     }
@@ -1144,6 +1206,52 @@ impl ProviderService {
         }
 
         Ok(())
+    }
+
+    fn validate_provider_alias(
+        state: &AppState,
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Result<(), AppError> {
+        if !matches!(app_type, AppType::Claude) {
+            return Ok(());
+        }
+
+        let Some(alias) = provider.alias.as_deref() else {
+            return Ok(());
+        };
+
+        if !Self::is_valid_claude_alias(alias) {
+            return Err(AppError::localized(
+                "provider.claude.alias.invalid",
+                "Shell alias 只能包含小写字母、数字和连字符，且不能以连字符开头或结尾",
+                "Shell alias may only contain lowercase letters, numbers, and hyphens, and it cannot start or end with a hyphen",
+            ));
+        }
+
+        let providers = state.db.get_all_providers(app_type.as_str())?;
+        if providers.values().any(|existing| {
+            existing.id != provider.id
+                && existing
+                    .alias
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| value.eq_ignore_ascii_case(alias))
+        }) {
+            return Err(AppError::localized(
+                "provider.claude.alias.duplicate",
+                format!("Shell alias '{}' 已被其他 Claude 供应商占用", alias),
+                format!("Shell alias '{}' is already used by another Claude provider", alias),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn is_valid_claude_alias(alias: &str) -> bool {
+        Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+            .map(|pattern| pattern.is_match(alias))
+            .unwrap_or(false)
     }
 
     #[allow(dead_code)]

@@ -39,6 +39,7 @@ impl Database {
                 meta TEXT NOT NULL DEFAULT '{}',
                 is_current BOOLEAN NOT NULL DEFAULT 0,
                 in_failover_queue BOOLEAN NOT NULL DEFAULT 0,
+                alias TEXT,
                 PRIMARY KEY (id, app_type)
             )",
             [],
@@ -322,6 +323,9 @@ impl Database {
             "in_failover_queue",
             "BOOLEAN NOT NULL DEFAULT 0",
         )?;
+
+        // 确保 alias 列存在（向后兼容旧数据库）
+        Self::add_column_if_missing(conn, "providers", "alias", "TEXT")?;
 
         // 删除旧的 failover_queue 表（如果存在）
         let _ = conn.execute("DROP INDEX IF EXISTS idx_failover_queue_order", []);

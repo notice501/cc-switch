@@ -1,12 +1,14 @@
 mod app_config;
 mod app_store;
 mod auto_launch;
+mod builtin_skill;
 mod claude_mcp;
 mod claude_plugin;
 mod codex_config;
 mod commands;
 mod config;
 mod database;
+mod dispatch_service;
 mod deeplink;
 mod error;
 mod gemini_config;
@@ -393,6 +395,19 @@ pub fn run() {
 
             let app_state = AppState::new(db);
 
+            match dispatch_service::start(app_state.db.clone()) {
+                Ok(discovery) => {
+                    log::info!(
+                        "✓ Dispatch service ready at {} (pid={})",
+                        discovery.base_url,
+                        discovery.pid
+                    );
+                }
+                Err(err) => {
+                    log::error!("✗ Failed to start dispatch service: {err}");
+                }
+            }
+
             // 设置 AppHandle 用于代理故障转移时的 UI 更新
             app_state.proxy_service.set_app_handle(app.handle().clone());
 
@@ -448,6 +463,18 @@ pub fn run() {
                 }
                 Ok(_) => {} // 未开启迁移标志，静默跳过
                 Err(e) => log::warn!("✗ Failed to read skills migration flag: {e}"),
+            }
+
+            match builtin_skill::ensure_dispatch_task_skill(&app_state.db) {
+                Ok(skill) => {
+                    log::info!(
+                        "✓ Ensured builtin Claude skill '{}' is installed",
+                        skill.directory
+                    );
+                }
+                Err(err) => {
+                    log::warn!("✗ Failed to install builtin dispatch skill: {err}");
+                }
             }
 
             // 2. OMO 配置导入（当数据库中无 OMO provider 时，从本地文件导入）
@@ -1021,6 +1048,10 @@ pub fn run() {
             // OpenCode specific
             commands::import_opencode_providers_from_live,
             commands::get_opencode_live_provider_ids,
+            // Shell aliases
+            commands::get_shell_aliases,
+            commands::write_shell_aliases_file,
+            commands::get_shell_aliases_file_path,
             // OpenClaw specific
             commands::import_openclaw_providers_from_live,
             commands::get_openclaw_live_provider_ids,
@@ -1085,6 +1116,10 @@ pub fn run() {
             commands::delete_daily_memory_file,
             commands::search_daily_memory_files,
             commands::open_workspace_directory,
+            // Environment variable management
+            commands::check_env_conflicts,
+            commands::delete_env_vars,
+            commands::restore_env_backup,
         ]);
 
     let app = builder

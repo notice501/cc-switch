@@ -6,6 +6,7 @@ use crate::commands::copilot::CopilotAuthState;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::services::{
+    provider::{generate_aliases_script, get_aliases_file_path, write_aliases_file, ensure_shell_sourced},
     EndpointLatency, ProviderService, ProviderSortUpdate, SpeedtestService, SwitchResult,
 };
 use crate::store::AppState;
@@ -406,6 +407,51 @@ pub fn get_opencode_live_provider_ids() -> Result<Vec<String>, String> {
     crate::opencode_config::get_providers()
         .map(|providers| providers.keys().cloned().collect())
         .map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Shell Alias Commands
+
+/// 获取当前生成的 shell alias 脚本内容（供 UI 预览）
+#[tauri::command]
+pub fn get_shell_aliases(state: State<'_, AppState>) -> Result<String, String> {
+    let providers = state
+        .db
+        .get_all_providers("claude")
+        .map_err(|e| e.to_string())?;
+    let current_id = crate::settings::get_effective_current_provider(
+        &state.db,
+        &AppType::Claude,
+    )
+    .map_err(|e| e.to_string())?
+    .unwrap_or_default();
+    Ok(generate_aliases_script(&providers, &current_id))
+}
+
+/// 手动触发写入 aliases.sh 文件，返回文件路径
+#[tauri::command]
+pub fn write_shell_aliases_file(state: State<'_, AppState>) -> Result<String, String> {
+    let providers = state
+        .db
+        .get_all_providers("claude")
+        .map_err(|e| e.to_string())?;
+    let current_id = crate::settings::get_effective_current_provider(
+        &state.db,
+        &AppType::Claude,
+    )
+    .map_err(|e| e.to_string())?
+    .unwrap_or_default();
+    let script = generate_aliases_script(&providers, &current_id);
+    let path = write_aliases_file(&script).map_err(|e| e.to_string())?;
+    // Also ensure shell config sources the file
+    let _ = ensure_shell_sourced(&path);
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// 获取 aliases.sh 文件路径
+#[tauri::command]
+pub fn get_shell_aliases_file_path() -> String {
+    get_aliases_file_path().to_string_lossy().into_owned()
 }
 
 // ============================================================================

@@ -41,6 +41,12 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { cn } from "@/lib/utils";
 import { isWindows, isLinux } from "@/lib/platform";
+import {
+  readLocalStorage,
+  readSessionStorage,
+  writeLocalStorage,
+  writeSessionStorage,
+} from "@/lib/storage";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
@@ -107,7 +113,7 @@ const VALID_APPS: AppId[] = [
 ];
 
 const getInitialApp = (): AppId => {
-  const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
+  const saved = readLocalStorage(STORAGE_KEY) as AppId | null;
   if (saved && VALID_APPS.includes(saved)) {
     return saved;
   }
@@ -132,7 +138,7 @@ const VALID_VIEWS: View[] = [
 ];
 
 const getInitialView = (): View => {
-  const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
+  const saved = readLocalStorage(VIEW_STORAGE_KEY) as View | null;
   if (saved && VALID_VIEWS.includes(saved)) {
     return saved;
   }
@@ -149,7 +155,7 @@ function App() {
   const [isAddOpen, setIsAddOpen] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(VIEW_STORAGE_KEY, currentView);
+    writeLocalStorage(VIEW_STORAGE_KEY, currentView);
   }, [currentView]);
 
   const { data: settingsData } = useSettingsQuery();
@@ -394,7 +400,7 @@ function App() {
 
         if (flatConflicts.length > 0) {
           setEnvConflicts(flatConflicts);
-          const dismissed = sessionStorage.getItem("env_banner_dismissed");
+          const dismissed = readSessionStorage("env_banner_dismissed");
           if (!dismissed) {
             setShowEnvBanner(true);
           }
@@ -471,7 +477,7 @@ function App() {
             );
             return [...prev, ...newConflicts];
           });
-          const dismissed = sessionStorage.getItem("env_banner_dismissed");
+          const dismissed = readSessionStorage("env_banner_dismissed");
           if (!dismissed) {
             setShowEnvBanner(true);
           }
@@ -844,7 +850,7 @@ function App() {
           conflicts={envConflicts}
           onDismiss={() => {
             setShowEnvBanner(false);
-            sessionStorage.setItem("env_banner_dismissed", "true");
+            writeSessionStorage("env_banner_dismissed", "true");
           }}
           onDeleted={async () => {
             try {
