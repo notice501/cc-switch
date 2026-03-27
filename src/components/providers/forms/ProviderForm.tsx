@@ -1362,23 +1362,30 @@ export function ProviderForm({
             control={form.control}
             name="alias"
             render={({ field }) => (
-              <FormItem>
-                <FormLabel>Shell Alias</FormLabel>
-                <FormControl>
-                  <div className="flex items-center gap-1">
-                    <span className="text-sm text-muted-foreground shrink-0">claude-</span>
-                    <Input
-                      {...field}
-                      placeholder="alibaba"
-                      className="flex-1"
-                    />
-                  </div>
-                </FormControl>
-                <p className="text-xs text-muted-foreground">
-                  仅支持小写字母、数字和连字符；设置后可在终端用 <code className="font-mono bg-muted px-1 rounded">claude-{field.value || "alias"}</code> 调用此供应商，当前激活的供应商无需设置
-                </p>
-                <FormMessage />
-              </FormItem>
+              (() => {
+                const normalizedAlias =
+                  field.value?.replace(/^claude-/, "") || "alias";
+
+                return (
+                  <FormItem>
+                    <FormLabel>Shell Alias</FormLabel>
+                    <FormControl>
+                      <div className="flex items-center gap-1">
+                        <span className="text-sm text-muted-foreground shrink-0">claude-</span>
+                        <Input
+                          {...field}
+                          placeholder="alibaba"
+                          className="flex-1"
+                        />
+                      </div>
+                    </FormControl>
+                    <p className="text-xs text-muted-foreground">
+                      仅支持小写字母、数字和连字符；可填 <code className="font-mono bg-muted px-1 rounded">mini</code> 或 <code className="font-mono bg-muted px-1 rounded">claude-mini</code>，实际命令都会生成为 <code className="font-mono bg-muted px-1 rounded">claude-{normalizedAlias}</code>。当前激活的供应商无需设置
+                    </p>
+                    <FormMessage />
+                  </FormItem>
+                );
+              })()
             )}
           />
         )}

@@ -10,8 +10,8 @@ mod usage;
 
 // Re-export alias functions for use in commands
 pub use alias::{
-    generate_aliases_script, get_aliases_file_path, write_aliases_file,
-    ensure_shell_sourced,
+    ensure_shell_sourced, generate_aliases_script, get_aliases_file_path, refresh_aliases,
+    write_aliases_file,
 };
 
 use indexmap::IndexMap;
@@ -158,6 +158,7 @@ impl ProviderService {
             .alias
             .as_deref()
             .map(str::trim)
+            .map(|value| value.strip_prefix("claude-").unwrap_or(value))
             .filter(|value| !value.is_empty())
             .map(str::to_string);
     }

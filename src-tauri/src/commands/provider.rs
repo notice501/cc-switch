@@ -6,7 +6,10 @@ use crate::commands::copilot::CopilotAuthState;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::services::{
-    provider::{generate_aliases_script, get_aliases_file_path, write_aliases_file, ensure_shell_sourced},
+    provider::{
+        ensure_shell_sourced, generate_aliases_script, get_aliases_file_path, refresh_aliases,
+        write_aliases_file,
+    },
     EndpointLatency, ProviderService, ProviderSortUpdate, SpeedtestService, SwitchResult,
 };
 use crate::store::AppState;
@@ -443,6 +446,7 @@ pub fn write_shell_aliases_file(state: State<'_, AppState>) -> Result<String, St
     .unwrap_or_default();
     let script = generate_aliases_script(&providers, &current_id);
     let path = write_aliases_file(&script).map_err(|e| e.to_string())?;
+    refresh_aliases(&providers, &current_id);
     // Also ensure shell config sources the file
     let _ = ensure_shell_sourced(&path);
     Ok(path.to_string_lossy().into_owned())
