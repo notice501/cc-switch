@@ -1,122 +1,91 @@
 <div align="center">
 
-# CC Switch
+# CCswitch Pro
 
-### The All-in-One Manager for Claude Code, Codex, Gemini CLI, OpenCode & OpenClaw
+### Turn multiple coding plans and model tiers into one smoother workflow
 
-[![Version](https://img.shields.io/badge/version-3.12.3-blue.svg)](https://github.com/farion1231/cc-switch/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/cc-switch/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/notice501/cc-switch/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
-[![Downloads](https://img.shields.io/endpoint?url=https://api.pinstudios.net/api/badges/downloads/farion1231/cc-switch/total)](https://github.com/farion1231/cc-switch/releases/latest)
 
-<a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fcc-switch | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-
-English | [中文](README_ZH.md) | [日本語](README_JA.md) | [Changelog](CHANGELOG.md)
+English | [中文](README_ZH.md) | [日本語](README_JA.md) | [Changelog](CHANGELOG.md) | [Upstream Project](https://github.com/farion1231/cc-switch)
 
 </div>
 
-## ❤️Sponsor
+## Why This Exists
 
-<details open>
-<summary>Click to collapse</summary>
+Many people do not have just one model subscription anymore.
 
-[![MiniMax](assets/partners/banners/minimax-en.jpeg)](https://platform.minimax.io/subscribe/coding-plan?code=ClLhgxr2je&source=link)
+You might have Aliyun coding plans, Zhipu coding plans, official Claude access, Codex access, or several relay providers. Each one has different tradeoffs, but in a normal CLI workflow you often end up using only one at a time because switching is annoying and the others sit idle.
 
-MiniMax-M2.7 is a next-generation large language model designed for autonomous evolution and real-world productivity. Unlike traditional models, M2.7 actively participates in its own improvement through agent teams, dynamic tool use, and reinforcement learning loops. It delivers strong performance in software engineering (56.22% on SWE-Pro, 55.6% on VIBE-Pro, 57.0% on Terminal Bench 2) and excels in complex office workflows, achieving a leading 1495 ELO on GDPval-AA. With high-fidelity editing across Word, Excel, and PowerPoint, and a 97% adherence rate across 40+ complex skills, M2.7 sets a new standard for building AI-native workflows and organizations.
+The second pain point is model division of labor. Opus is powerful and great for architecture, planning, and judgment, but it is expensive. It is often not the model you want doing every implementation detail from start to finish. A more natural workflow is: **use the expensive model for decisions, and cheaper models for execution**.
 
-[Click](https://platform.minimax.io/subscribe/coding-plan?code=ClLhgxr2je&source=link) to get an exclusive 12% off the MiniMax Token Plan!
+CCswitch Pro is built around that idea. The goal is not just “switch providers,” but to help you organize multiple providers, plans, and model tiers into a workflow that is actually comfortable to use.
 
----
+## Two Common Workflows
 
-<table>
-<tr>
-<td width="180"><a href="https://www.packyapi.com/register?aff=cc-switch"><img src="assets/partners/logos/packycode.png" alt="PackyCode" width="150"></a></td>
-<td>Thanks to PackyCode for sponsoring this project! PackyCode is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more. PackyCode provides special discounts for our software users: register using <a href="https://www.packyapi.com/register?aff=cc-switch">this link</a> and enter the "cc-switch" promo code during first recharge to get 10% off.</td>
-</tr>
+### Workflow A: use multiple subscriptions instead of picking one forever
 
-<tr>
-<td width="180"><a href="https://cloud.siliconflow.cn/i/drGuwc9k"><img src="assets/partners/logos/silicon_en.jpg" alt="SiliconFlow" width="150"></a></td>
-<td>Thanks to SiliconFlow for sponsoring this project! SiliconFlow is a high-performance AI infrastructure and model API platform, providing fast and reliable access to language, speech, image, and video models in one place. With pay-as-you-go billing, broad multimodal model support, high-speed inference, and enterprise-grade stability, SiliconFlow helps developers and teams build and scale AI applications more efficiently. Register via <a href="https://cloud.siliconflow.cn/i/drGuwc9k">this link</a> and complete real-name verification to receive ¥20 in bonus credit, usable across models on the platform. SiliconFlow is also now compatible with OpenClaw, allowing users to connect a SiliconFlow API key and call major AI models for free.</td>
-</tr>
+- You have Aliyun coding plans, Zhipu coding plans, or multiple Claude / Codex providers
+- Different providers vary in cost, stability, and model availability
+- You do not want to hand-edit config files just to move between them
+- You want to use whichever provider is best for the current job, without friction
 
-<tr>
-<td width="180"><a href="https://aigocode.com/invite/CC-SWITCH"><img src="assets/partners/logos/aigocode.png" alt="AIGoCode" width="150"></a></td>
-<td>Thanks to AIGoCode for sponsoring this project! AIGoCode is an all-in-one platform that integrates Claude Code, Codex, and the latest Gemini models, providing you with stable, efficient, and highly cost-effective AI coding services. The platform offers flexible subscription plans, zero risk of account suspension, direct access with no VPN required, and lightning-fast responses. AIGoCode has prepared a special benefit for CC Switch users: if you register via <a href="https://aigocode.com/invite/CC-SWITCH">this link</a>, you'll receive an extra 10% bonus credit on your first top-up!</td>
-</tr>
+### Workflow B: let stronger models plan and cheaper models execute
 
-<tr>
-<td width="180"><a href="https://www.aicodemirror.com/register?invitecode=9915W3"><img src="assets/partners/logos/aicodemirror.jpg" alt="AICodeMirror" width="150"></a></td>
-<td>Thanks to AICodeMirror for sponsoring this project! AICodeMirror provides official high-stability relay services for Claude Code / Codex / Gemini CLI, with enterprise-grade concurrency, fast invoicing, and 24/7 dedicated technical support.
-Claude Code / Codex / Gemini official channels at 38% / 2% / 9% of original price, with extra discounts on top-ups! AICodeMirror offers special benefits for CC Switch users: register via <a href="https://www.aicodemirror.com/register?invitecode=9915W3">this link</a> to enjoy 20% off your first top-up, and enterprise customers can get up to 25% off!</td>
-</tr>
+- Let Opus handle architecture, task breakdown, and hard judgment calls
+- Let Codex or cheaper models handle implementation details and repetitive code work
+- Keep the expensive model focused on high-value thinking
+- Treat models more like a team with roles, not one monolithic assistant
 
-<tr>
-<td width="180"><a href="https://cubence.com/signup?code=CCSWITCH&source=ccs"><img src="assets/partners/logos/cubence.png" alt="Cubence" width="150"></a></td>
-<td>Thanks to Cubence for sponsoring this project! Cubence is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more with flexible billing options including pay-as-you-go and monthly plans. Cubence provides special discounts for CC Switch users: register using <a href="https://cubence.com/signup?code=CCSWITCH&source=ccs">this link</a> and enter the "CCSWITCH" promo code during recharge to get 10% off every top-up!</td>
-</tr>
+## How CCswitch Pro Helps
 
-<tr>
-<td width="180"><a href="https://www.dmxapi.cn/register?aff=bUHu"><img src="assets/partners/logos/dmx-en.jpg" alt="DMXAPI" width="150"></a></td>
-<td>Thanks to DMXAPI for sponsoring this project! DMXAPI provides global large model API services to 200+ enterprise users. One API key for all global models. Features include: instant invoicing, unlimited concurrency, starting from $0.15, 24/7 technical support. GPT/Claude/Gemini all at 32% off, domestic models 20-50% off, Claude Code exclusive models at 66% off! <a href="https://www.dmxapi.cn/register?aff=bUHu">Register here</a></td>
-</tr>
+- Manage providers for Claude Code, Codex, Gemini CLI, OpenCode, and OpenClaw from one UI
+- Switch the current provider without hand-editing JSON, TOML, or `.env`
+- Dispatch subtasks to specific **Claude** or **Codex** providers when a different model is a better fit
+- Resolve dispatch targets by `alias`, provider name, raw provider id, or `current`
+- The collaboration story here is centered on the **Claude + Codex dispatch path** today, not a built-in full auto-orchestrator
 
-<tr>
-<td width="180"><a href="https://www.compshare.cn/coding-plan?ytag=GPU_YY_YX_git_cc-switch"><img src="assets/partners/logos/ucloud.png" alt="Compshare" width="150"></a></td>
-<td>Thanks to Compshare for sponsoring this project! Compshare is UCloud's AI cloud platform, providing stable and comprehensive domestic and international model APIs with just one key. Featuring cost-effective monthly and pay-as-you-go Coding Plan packages at 60-80% off official prices. Supports Claude Code, Codex, and API access. Enterprise-grade high concurrency, 24/7 technical support, and self-service invoicing. Users who register via <a href="https://www.compshare.cn/coding-plan?ytag=GPU_YY_YX_git_cc-switch">this link</a> will receive a free 5 CNY platform trial credit!</td>
-</tr>
+## Why Not Just Basic Switching?
 
-<tr>
-<td width="180"><a href="https://www.right.codes/register?aff=CCSWITCH"><img src="assets/partners/logos/rightcode.jpg" alt="RightCode" width="150"></a></td>
-<td>Thank you to Right Code for sponsoring this project! Right Code reliably provides routing services for models such as Claude Code, Codex, and Gemini. It features a highly cost-effective Codex monthly subscription plan and <strong>supports quota rollovers—unused quota from one day can be carried over and used the next day.</strong> Invoices are available upon top-up. Enterprise and team users can receive dedicated one-on-one support. Right Code also offers an exclusive discount for CC Switch users: register via <a href="https://www.right.codes/register?aff=CCSWITCH">this link</a>, and with every top-up you will receive pay-as-you-go credit equivalent to 25% of the amount paid.</td>
-</tr>
+Basic provider switching answers “which one am I using right now?” but not “how do I make several subscriptions useful together?”
 
-<tr>
-<td width="180"><a href="https://aicoding.sh/i/CCSWITCH"><img src="assets/partners/logos/aicoding.jpg" alt="AICoding" width="150"></a></td>
-<td>Thanks to AICoding.sh for sponsoring this project! AICoding.sh — Global AI Model API Relay Service at Unbeatable Prices! Claude Code at 19% of original price, GPT at just 1%! Trusted by hundreds of enterprises for cost-effective AI services. Supports Claude Code, GPT, Gemini and major domestic models, with enterprise-grade high concurrency, fast invoicing, and 24/7 dedicated technical support. CC Switch users who register via <a href="https://aicoding.sh/i/CCSWITCH">this link</a> get 10% off their first top-up!</td>
-</tr>
+CCswitch Pro is more opinionated about real multi-provider workflows: keep several plans around, switch quickly, and send some tasks to better-fit Claude or Codex providers when needed.
 
-<tr>
-<td width="180"><a href="https://crazyrouter.com/register?aff=OZcm&ref=cc-switch"><img src="assets/partners/logos/crazyrouter.jpg" alt="Crazyrouter" width="150"></a></td>
-<td>Thanks to Crazyrouter for sponsoring this project! Crazyrouter is a high-performance AI API aggregation platform — one API key for 300+ models including Claude Code, Codex, Gemini CLI, and more. All models at 55% of official pricing with auto-failover, smart routing, and unlimited concurrency. Crazyrouter offers an exclusive deal for CC Switch users: register via <a href="https://crazyrouter.com/register?aff=OZcm&ref=cc-switch">this link</a>  to get <strong>$2 free credit</strong> instantly, plus enter promo code `CCSWITCH` on your first top-up for an extra <strong>30% bonus credit</strong>! </td>
-</tr>
+That is the main reason this fork exists: not to repaint the upstream app, but to push harder toward practical multi-model collaboration.
 
-<tr>
-<td width="180"><a href="https://www.sssaicode.com/register?ref=DCP0SM"><img src="assets/partners/logos/sssaicode.png" alt="SSSAiCode" width="150"></a></td>
-<td>Thanks to SSSAiCode for sponsoring this project! SSSAiCode is a stable and reliable API relay service, dedicated to providing stable, reliable, and affordable Claude and Codex model services, <strong>offering high cost-effective official Claude service at just ¥0.5/$ equivalent</strong>, supporting monthly and pay-as-you-go billing plans with same-day fast invoicing. SSSAiCode offers a special deal for CC Switch users: register via <a href="https://www.sssaicode.com/register?ref=DCP0SM">this link</a> to enjoy $10 extra credit on every top-up!</td>
-</tr>
+## Core Capabilities
 
-<tr>
-<td width="180"><a href="https://www.openclaudecode.cn/register?aff=aOYQ"><img src="assets/partners/logos/mikubanner.svg" alt="Micu" width="150"></a></td>
-<td>Thanks to Micu API for sponsoring this project! Micu API is a global LLM relay service provider dedicated to delivering the best cost-performance ratio with high stability. Backed by a registered enterprise for core assurance, eliminating any risk of service discontinuation, with fast official invoicing support! We champion "zero cost to try": top up from as low as ¥1 with no minimum, and get fee-free refunds anytime! Micu API offers an exclusive deal for CC Switch users: register via <a href="https://www.openclaudecode.cn/register?aff=aOYQ">this link</a> and enter promo code "ccswitch" when topping up to enjoy a <strong>10% discount</strong>!</td>
-</tr>
+[Full Changelog](CHANGELOG.md) | [Release Notes](docs/release-notes/v3.12.3-en.md)
 
-<tr>
-<td width="180"><a href="https://x-code.cc/register?aff=IbPp"><img src="assets/partners/logos/xcodeapi.png" alt="XCodeAPI" width="150"></a></td>
-<td>Thanks to XCodeAPI for sponsoring this project! XCodeAPI offers a special benefit for CC Switch users: register via <a href="https://x-code.cc/register?aff=IbPp">this link</a> and get an extra 10% credit bonus on your first order! (Contact the site admin to claim)</td>
-</tr>
+### Multi-subscription management
 
-<tr>
-<td width="180"><a href="https://ctok.ai"><img src="assets/partners/logos/ctok.png" alt="CTok" width="150"></a></td>
-<td>Thanks to CTok.ai for sponsoring this project! CTok.ai is dedicated to building a one-stop AI programming tool service platform. We offer professional Claude Code packages and technical community services, with support for Google Gemini and OpenAI Codex. Through carefully designed plans and a professional tech community, we provide developers with reliable service guarantees and continuous technical support, making AI-assisted programming a true productivity tool. Click <a href="https://ctok.ai">here</a> to register!</td>
-</tr>
+- Manage providers across 5 CLI tools in one place
+- Import from 50+ presets to onboard different coding plans and relay providers quickly
+- Use sorting, import/export, and tray switching to reduce switching friction
 
-</table>
+### Multi-model collaboration and task dispatch
 
-</details>
+- Keep one provider as your main entry point, then dispatch subtasks to a better-fit Claude or Codex provider
+- Resolve dispatch targets through `alias`, provider name, provider id, or `current`
+- A good fit for workflows like “Opus for architecture, Codex for implementation,” without pretending to be a fully automatic orchestrator
 
-## Why CC Switch?
+### Cost and usage control
 
-Modern AI-powered coding relies on CLI tools like Claude Code, Codex, Gemini CLI, OpenCode, and OpenClaw — but each has its own configuration format. Switching API providers means manually editing JSON, TOML, or `.env` files, and there is no unified way to manage MCP and Skills across multiple tools.
+- Track requests, tokens, and spend per provider
+- Keep expensive models for high-value reasoning and move repetitive execution to cheaper models
+- Use custom pricing to compare the real cost of different plans
 
-**CC Switch** gives you a single desktop app to manage all five CLI tools. Instead of editing config files by hand, you get a visual interface to import providers with one click, switch between them instantly, with 50+ built-in provider presets, unified MCP and Skills management, and system tray quick switching — all backed by a reliable SQLite database with atomic writes that protect your configs from corruption.
+### Sync and isolation
 
-- **One App, Five CLI Tools** — Manage Claude Code, Codex, Gemini CLI, OpenCode, and OpenClaw from a single interface
-- **No More Manual Editing** — 50+ provider presets including AWS Bedrock, NVIDIA NIM, and community relays; just pick and switch
-- **Unified MCP & Skills Management** — One panel to manage MCP servers and Skills across four apps with bidirectional sync
-- **System Tray Quick Switch** — Switch providers instantly from the tray menu, no need to open the full app
-- **Cloud Sync** — Sync provider data across devices via Dropbox, OneDrive, iCloud, or WebDAV servers
-- **Cross-Platform** — Native desktop app for Windows, macOS, and Linux, built with Tauri 2
-- **Built-in Utilities** — Includes various utilities for first-launch login confirmation, signature bypass, plugin extension sync, and more
+- Cloud sync, custom config directories, backups, and atomic writes help keep setups durable
+- This fork uses its own config directory, deep-link scheme, and local storage namespace
+- Easier to run side-by-side with upstream builds without mixing state by accident
+
+### MCP, Prompts, and Skills support
+
+- Manage MCP, Prompts, and Skills centrally instead of redoing the same setup per CLI
+- Sync prompt files across apps with backfill protection
+- Install Skills from GitHub repos or ZIP archives to capture repeatable workflows
 
 ## Screenshots
 
@@ -124,122 +93,148 @@ Modern AI-powered coding relies on CLI tools like Claude Code, Codex, Gemini CLI
 | :-----------------------------------------------: | :--------------------------------------------: |
 | ![Main Interface](assets/screenshots/main-en.png) | ![Add Provider](assets/screenshots/add-en.png) |
 
-## Features
-
-[Full Changelog](CHANGELOG.md) | [Release Notes](docs/release-notes/v3.12.3-en.md)
-
-### Provider Management
-
-- **5 CLI tools, 50+ presets** — Claude Code, Codex, Gemini CLI, OpenCode, OpenClaw; copy your key and import with one click
-- **Universal providers** — One config syncs to multiple apps (OpenCode, OpenClaw)
-- One-click switching, system tray quick access, drag-and-drop sorting, import/export
-
-### Proxy & Failover
-
-- **Local proxy with hot-switching** — Format conversion, auto-failover, circuit breaker, provider health monitoring, and request rectifier
-- **App-level takeover** — Independently proxy Claude, Codex, or Gemini, down to individual providers
-
-### MCP, Prompts & Skills
-
-- **Unified MCP panel** — Manage MCP servers across 4 apps with bidirectional sync and Deep Link import
-- **Prompts** — Markdown editor with cross-app sync (CLAUDE.md / AGENTS.md / GEMINI.md) and backfill protection
-- **Skills** — One-click install from GitHub repos or ZIP files, custom repository management, with symlink and file copy support
-
-### Usage & Cost Tracking
-
-- **Usage dashboard** — Track spending, requests, and tokens with trend charts, detailed request logs, and custom per-model pricing
-
-### Session Manager & Workspace
-
-- Browse, search, and restore conversation history across all apps
-- **Workspace editor** (OpenClaw) — Edit agent files (AGENTS.md, SOUL.md, etc.) with Markdown preview
-
-### System & Platform
-
-- **Cloud sync** — Custom config directory (Dropbox, OneDrive, iCloud, NAS) and WebDAV server sync
-- **Deep Link** (`ccswitch://`) — Import providers, MCP servers, prompts, and skills via URL
-- Dark / Light / System theme, auto-launch, auto-updater, atomic writes, auto-backups, i18n (zh/en/ja)
-
-## FAQ
-
-<details>
-<summary><strong>Which AI CLI tools does CC Switch support?</strong></summary>
-
-CC Switch supports five tools: **Claude Code**, **Codex**, **Gemini CLI**, **OpenCode**, and **OpenClaw**. Each tool has dedicated provider presets and configuration management.
-
-</details>
-
-<details>
-<summary><strong>Do I need to restart the terminal after switching providers?</strong></summary>
-
-For most tools, yes — restart your terminal or the CLI tool for changes to take effect. The exception is **Claude Code**, which currently supports hot-switching of provider data without a restart.
-
-</details>
-
-<details>
-<summary><strong>My plugin configuration disappeared after switching providers — what happened?</strong></summary>
-
-CC Switch provides a "Shared Config Snippet" feature to pass common data (beyond API keys and endpoints) between providers. Go to "Edit Provider" → "Shared Config Panel" → click "Extract from Current Provider" to save all common data. When creating a new provider, check "Write Shared Config" (enabled by default) to include plugin data in the new provider. All your configuration items are preserved in the default provider imported when you first launched the app.
-
-</details>
-
-<details>
-<summary><strong>macOS shows "unidentified developer" warning — how do I fix it?</strong></summary>
-
-The author doesn't have an Apple Developer account yet (registration in progress). Close the warning, then go to **System Settings → Privacy & Security → Open Anyway**. After that, the app will open normally.
-
-</details>
-
-<details>
-<summary><strong>Why can't I delete the currently active provider?</strong></summary>
-
-CC Switch follows a "minimal intrusion" design principle — even if you uninstall the app, your CLI tools will continue to work normally. The system always keeps one active configuration, because deleting all configurations would make the corresponding CLI tool unusable. If you rarely use a specific CLI tool, you can hide it in Settings. To switch back to official login, see the next question.
-
-</details>
-
-<details>
-<summary><strong>How do I switch back to official login?</strong></summary>
-
-Add an official provider from the preset list. After switching to it, run the Log out / Log in flow, and then you can freely switch between the official provider and third-party providers. Codex supports switching between different official providers, making it easy to switch between multiple Plus or Team accounts.
-
-</details>
-
-<details>
-<summary><strong>Where is my data stored?</strong></summary>
-
-- **Database**: `~/.cc-switch/cc-switch.db` (SQLite — providers, MCP, prompts, skills)
-- **Local settings**: `~/.cc-switch/settings.json` (device-level UI preferences)
-- **Backups**: `~/.cc-switch/backups/` (auto-rotated, keeps 10 most recent)
-- **Skills**: `~/.cc-switch/skills/` (symlinked to corresponding apps by default)
-- **Skill Backups**: `~/.cc-switch/skill-backups/` (created automatically before uninstall, keeps 20 most recent)
-
-</details>
-
-## Documentation
-
-For detailed guides on every feature, check out the **[User Manual](docs/user-manual/en/README.md)** — covering provider management, MCP/Prompts/Skills, proxy & failover, and more.
-
 ## Quick Start
 
-### Basic Usage
+1. Add the providers you actually use, such as Aliyun, Zhipu, official Claude / Codex, or relay-based coding plans
+2. Pick one provider as your current working entry point
+3. When a task needs stronger reasoning, switch to a stronger provider; when it needs lower-cost execution, dispatch subtasks to a cheaper Claude or Codex provider
+4. Use the usage panel to refine your own model split over time
 
-1. **Add Provider**: Click "Add Provider" → Choose a preset or create custom configuration
-2. **Switch Provider**:
-   - Main UI: Select provider → Click "Enable"
-   - System Tray: Click provider name directly (instant effect)
-3. **Takes Effect**: Restart your terminal or the corresponding CLI tool to apply changes (Claude Code does not require a restart)
-4. **Back to Official**: Add an "Official Login" preset, restart the CLI tool, then follow its login/OAuth flow
+> **Note**: On first launch you can import existing CLI configs as your default provider set. The current dispatch path is primarily for Claude and Codex providers.
 
-### MCP, Prompts, Skills & Sessions
+## How To Use The Dispatch Skill
 
-- **MCP**: Click the "MCP" button → Add servers via templates or custom config → Toggle per-app sync
-- **Prompts**: Click "Prompts" → Create presets with Markdown editor → Activate to sync to live files
-- **Skills**: Click "Skills" → Browse GitHub repos → One-click install to all apps
-- **Sessions**: Click "Sessions" → Browse, search, and restore conversation history across all apps
+The dispatch workflow is currently exposed through the built-in **`/dispatch-task` skill inside Claude Code**. In practice:
 
-> **Note**: On first launch, you can manually import existing CLI tool configs as the default provider.
+- CCswitch Pro manages providers and runs the local dispatch service
+- Claude Code invokes the built-in `/dispatch-task` skill
+- Dispatch targets currently support **Claude providers** and **Codex providers**
 
-## Download & Installation
+### Recommended flow
+
+1. Configure your Claude and Codex providers in CCswitch Pro
+2. Keep the CCswitch Pro desktop app running
+3. In Claude Code, run `/dispatch-task providers` first to see available targets
+4. Pick a target and dispatch the subtask
+5. Use `status`, `last`, and `logs` to inspect the result
+
+### Command format
+
+```text
+/dispatch-task providers [app]
+/dispatch-task status
+/dispatch-task last
+/dispatch-task logs [count]
+/dispatch-task <app:provider> [timeout=<seconds>] -- <task text>
+```
+
+Notes:
+
+- `app` currently supports `claude` and `codex`
+- `provider` can be an `alias`, provider name, provider id, or `current`
+- Default timeout is `120` seconds and the max is `900`
+- The actual task must appear after `--`
+
+### Common commands
+
+#### 1. List dispatch targets
+
+```text
+/dispatch-task providers
+/dispatch-task providers claude
+/dispatch-task providers codex
+```
+
+This prints the targets you can actually dispatch to, such as:
+
+- `claude:current`
+- `claude:opus`
+- `codex:aliyun-codex`
+- `codex:zhipu-codex`
+
+If you are unsure how a target should be spelled, start here.
+
+#### 2. Check current status
+
+```text
+/dispatch-task status
+```
+
+Useful for checking whether a run is still in progress, which target it is using, and how long it has been running.
+
+#### 3. Inspect the latest result
+
+```text
+/dispatch-task last
+```
+
+Useful for reviewing the latest callback, summary, and deliverable from the child run.
+
+#### 4. Review recent history
+
+```text
+/dispatch-task logs
+/dispatch-task logs 5
+```
+
+Useful for quickly seeing whether recent dispatches succeeded, who they were sent to, and whether anything timed out.
+
+#### 5. Dispatch a real subtask
+
+```text
+/dispatch-task claude:current -- First do the architecture analysis and provide a task breakdown.
+/dispatch-task claude:opus -- Evaluate the boundary, risks, and module split for this feature.
+/dispatch-task codex:current -- Implement the first part directly based on the agreed plan.
+/dispatch-task codex:aliyun-codex timeout=600 -- Implement the API layer and tests based on the breakdown above.
+```
+
+### Example workflow
+
+#### Opus for architecture, Codex for implementation
+
+1. Inspect available targets
+
+```text
+/dispatch-task providers
+```
+
+2. Ask a stronger Claude provider to produce the architecture breakdown
+
+```text
+/dispatch-task claude:opus -- Read the current project structure and produce module boundaries, risks, and the recommended implementation order.
+```
+
+3. Hand execution to a Codex provider
+
+```text
+/dispatch-task codex:aliyun-codex -- Based on the breakdown above, implement phase one and add the necessary tests.
+```
+
+4. Inspect status and history
+
+```text
+/dispatch-task status
+/dispatch-task last
+/dispatch-task logs 5
+```
+
+#### Rotating between multiple coding plans
+
+If you keep both Aliyun and Zhipu coding plans available in CCswitch Pro, you can route different subtasks to different Codex providers as needed:
+
+```text
+/dispatch-task codex:aliyun-codex -- Handle the larger batch implementation task first.
+/dispatch-task codex:zhipu-codex -- Then handle the next subtask that fits this provider better.
+```
+
+### Practical tips
+
+- If you are unsure about the target syntax, run `/dispatch-task providers` first
+- To use the currently active provider, write `claude:current` or `codex:current`
+- For longer jobs, explicitly add `timeout=600`
+- If you see a dispatch-service-not-found error, make sure the **CCswitch Pro desktop app is running**
+
+## Installation
 
 ### System Requirements
 
@@ -247,54 +242,75 @@ For detailed guides on every feature, check out the **[User Manual](docs/user-ma
 - **macOS**: macOS 12 (Monterey) and above
 - **Linux**: Ubuntu 22.04+ / Debian 11+ / Fedora 34+ and other mainstream distributions
 
-### Windows Users
+### Install
 
-Download the latest `CC-Switch-v{version}-Windows.msi` installer or `CC-Switch-v{version}-Windows-Portable.zip` portable version from the [Releases](../../releases) page.
+Download the appropriate build for your platform from the [Releases](../../releases) page.
 
-### macOS Users
+- **Windows**: MSI installer or portable ZIP
+- **macOS**: app bundle ZIP from the release page
+- **Linux**: `.deb`, `.rpm`, `.AppImage`, or `.flatpak`
 
-**Method 1: Install via Homebrew (Recommended)**
+> **Note**: This fork currently documents manual installation only. Package manager distribution should come later, once the fork's own release pipeline is stable.
 
-```bash
-brew tap farion1231/ccswitch
-brew install --cask cc-switch
-```
+## FAQ
 
-Update:
+<details>
+<summary><strong>What kinds of workflows is CCswitch Pro best for?</strong></summary>
 
-```bash
-brew upgrade --cask cc-switch
-```
+It is best for two cases: you have several coding plans or providers and want to use them all efficiently, or you want stronger models to handle architecture and judgment while cheaper models handle implementation and execution.
 
-**Method 2: Manual Download**
+</details>
 
-Download `CC-Switch-v{version}-macOS.zip` from the [Releases](../../releases) page and extract to use.
+<details>
+<summary><strong>Can I use Opus for architecture and Codex for implementation?</strong></summary>
 
-> **Note**: Since the author doesn't have an Apple Developer account, you may see an "unidentified developer" warning on first launch. Please close it first, then go to "System Settings" → "Privacy & Security" → click "Open Anyway", and you'll be able to open it normally afterwards.
+Yes, that is exactly the kind of workflow this project is meant to support. You can manage multiple providers and dispatch subtasks to specific Claude or Codex providers. It does not automatically orchestrate that split for you, but it makes the workflow much easier to run.
 
-### Arch Linux Users
+</details>
 
-**Install via paru (Recommended)**
+<details>
+<summary><strong>Is this a full automatic multi-model orchestrator?</strong></summary>
 
-```bash
-paru -S cc-switch-bin
-```
+No. Think of it more as a control surface for organizing providers, switching quickly, and building Claude / Codex dispatch-based workflows, rather than a system that makes all orchestration decisions automatically.
 
-### Linux Users
+</details>
 
-Download the latest Linux build from the [Releases](../../releases) page:
+<details>
+<summary><strong>Do I need to restart the terminal after switching providers?</strong></summary>
 
-- `CC-Switch-v{version}-Linux.deb` (Debian/Ubuntu)
-- `CC-Switch-v{version}-Linux.rpm` (Fedora/RHEL/openSUSE)
-- `CC-Switch-v{version}-Linux.AppImage` (Universal)
-- `CC-Switch-v{version}-Linux.flatpak` (Flatpak)
+For most tools, yes. Restart the terminal or the CLI tool for changes to take effect. The exception is **Claude Code**, which currently supports hot-switching provider data without a restart.
 
-Flatpak install & run:
+</details>
 
-```bash
-flatpak install --user ./CC-Switch-v{version}-Linux.flatpak
-flatpak run com.ccswitch.desktop
-```
+<details>
+<summary><strong>Where is my data stored?</strong></summary>
+
+- **Database**: `~/.ccswitch-pro/cc-switch.db`
+- **Local settings**: `~/.ccswitch-pro/settings.json`
+- **Backups**: `~/.ccswitch-pro/backups/`
+- **Skills**: `~/.ccswitch-pro/skills/`
+- **Skill backups**: `~/.ccswitch-pro/skill-backups/`
+
+This fork also uses its own deep-link scheme, `ccswitchpro://`, plus its own local storage namespace so it is easier to run beside upstream builds.
+
+</details>
+
+<details>
+<summary><strong>Why use this instead of just using upstream switching?</strong></summary>
+
+Upstream already provides a strong base for provider management. This fork leans harder into multi-provider collaboration workflows, dispatch ergonomics, and side-by-side isolation. If your main goal is to make several subscriptions and model tiers work together more smoothly, this version is aimed at that use case.
+
+</details>
+
+## Documentation
+
+For more detailed usage guidance, check the **[User Manual](docs/user-manual/en/README.md)** covering providers, MCP, Prompts, Skills, proxy features, and failover.
+
+## Fork Lineage
+
+**CCswitch Pro** is an independently maintained fork of [CC Switch](https://github.com/farion1231/cc-switch).
+
+It keeps the upstream foundation, while adding fork-specific isolation and workflow-oriented refinements such as a separate app identity, separate config directory, separate WebDAV root, separate local storage prefix, separate deep-link scheme, and more ergonomic Claude / Codex dispatch targeting.
 
 <details>
 <summary><strong>Architecture Overview</strong></summary>
@@ -321,7 +337,7 @@ flatpak run com.ccswitch.desktop
 
 **Core Design Patterns**
 
-- **SSOT** (Single Source of Truth): All data stored in `~/.cc-switch/cc-switch.db` (SQLite)
+- **SSOT** (Single Source of Truth): All data stored in `~/.ccswitch-pro/cc-switch.db` (SQLite)
 - **Dual-layer Storage**: SQLite for syncable data, JSON for device-level settings
 - **Dual-way Sync**: Write to live files on switch, backfill from live when editing active provider
 - **Atomic Writes**: Temp file + rename pattern prevents config corruption
@@ -487,7 +503,7 @@ For new features, please open an issue for discussion before submitting a PR. PR
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=farion1231/cc-switch&type=Date)](https://www.star-history.com/#farion1231/cc-switch&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=notice501/cc-switch&type=Date)](https://www.star-history.com/#notice501/cc-switch&Date)
 
 ## License
 
