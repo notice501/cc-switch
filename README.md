@@ -125,7 +125,7 @@ The dispatch workflow is currently exposed through the built-in **`/dispatch-tas
 /dispatch-task status
 /dispatch-task last
 /dispatch-task logs [count]
-/dispatch-task <app:provider> [timeout=<seconds>] -- <task text>
+/dispatch-task <app:provider> [timeout=<seconds>] [wait=true] -- <task text>
 ```
 
 Notes:
@@ -133,6 +133,7 @@ Notes:
 - `app` currently supports `claude` and `codex`
 - `provider` can be an `alias`, provider name, provider id, or `current`
 - Default timeout is `120` seconds and the max is `900`
+- Dispatch runs in the background by default; add `wait=true` if you want the current Claude Code session to block until the child finishes
 - The actual task must appear after `--`
 
 ### Common commands
@@ -186,6 +187,7 @@ Useful for quickly seeing whether recent dispatches succeeded, who they were sen
 /dispatch-task claude:opus -- Evaluate the boundary, risks, and module split for this feature.
 /dispatch-task codex:current -- Implement the first part directly based on the agreed plan.
 /dispatch-task codex:aliyun-codex timeout=600 -- Implement the API layer and tests based on the breakdown above.
+/dispatch-task codex:aliyun-codex timeout=600 wait=true -- Block until the API layer and tests are done.
 ```
 
 ### Example workflow

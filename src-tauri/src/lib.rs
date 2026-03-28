@@ -6,6 +6,7 @@ mod builtin_skill;
 mod claude_mcp;
 mod claude_plugin;
 mod codex_config;
+mod codex_oauth;
 mod commands;
 mod config;
 mod database;
@@ -731,6 +732,15 @@ pub fn run() {
                 log::info!("✓ CopilotAuthManager initialized");
             }
 
+            // 初始化 Codex OAuth 登录管理器
+            {
+                use crate::codex_oauth::CodexOAuthLoginManager;
+                use commands::CodexAuthState;
+
+                app.manage(CodexAuthState(Arc::new(CodexOAuthLoginManager::new())));
+                log::info!("✓ Codex OAuth manager initialized");
+            }
+
             // 初始化全局出站代理 HTTP 客户端
             {
                 let db = &app.state::<AppState>().db;
@@ -1038,6 +1048,7 @@ pub fn run() {
             commands::get_session_messages,
             commands::delete_session,
             commands::launch_session_terminal,
+            commands::get_dispatch_status,
             commands::get_tool_versions,
             // Provider terminal
             commands::open_provider_terminal,
@@ -1085,6 +1096,11 @@ pub fn run() {
             commands::auth_remove_account,
             commands::auth_set_default_account,
             commands::auth_logout,
+            // Codex OAuth commands
+            commands::codex_auth_start_login,
+            commands::codex_auth_poll_login,
+            commands::codex_auth_get_status,
+            commands::codex_auth_refresh,
             // Copilot OAuth commands (multi-account support)
             commands::copilot_start_device_flow,
             commands::copilot_poll_for_auth,

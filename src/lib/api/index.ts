@@ -13,6 +13,7 @@ export { sessionsApi } from "./sessions";
 export { workspaceApi } from "./workspace";
 export * as configApi from "./config";
 export * as authApi from "./auth";
+export * as codexAuthApi from "./codexAuth";
 export * as copilotApi from "./copilot";
 export type { ProviderSwitchEvent } from "./providers";
 export type { Prompt } from "./prompts";
@@ -27,3 +28,10 @@ export type {
   ManagedAuthStatus,
   ManagedAuthDeviceCodeResponse,
 } from "./auth";
+export type {
+  CodexOAuthStatus,
+  CodexOAuthLoginStart,
+  CodexOAuthLoginComplete,
+  CodexOAuthLoginPoll,
+  CodexOAuthRefreshResponse,
+} from "./codexAuth";

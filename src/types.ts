@@ -327,6 +327,36 @@ export interface SessionMessage {
   ts?: number;
 }
 
+export interface DispatchActiveRun {
+  runId: string;
+  startedAt: number;
+  target: string;
+  providerName: string;
+  cwd: string;
+  timeoutSeconds: number;
+}
+
+export interface DispatchStatusRun {
+  runId: string;
+  timestamp: number;
+  target: string;
+  providerName: string;
+  cwd: string;
+  timeoutSeconds: number;
+  status: string;
+  timedOut: boolean;
+  exitCode?: number | null;
+  durationMs: number;
+  resultPreview: string;
+}
+
+export interface DispatchStatusSnapshot {
+  state: string;
+  updatedAt: number;
+  currentRun?: DispatchActiveRun | null;
+  lastRun?: DispatchStatusRun | null;
+}
+
 // MCP 服务器连接参数（宽松：允许扩展字段）
 export interface McpServerSpec {
   // 可选：社区常见 .mcp.json 中 stdio 配置可不写 type

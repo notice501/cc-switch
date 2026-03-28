@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::app_config::AppType;
+use crate::codex_oauth::{ensure_unique_account, extract_oauth_config};
 use crate::error::AppError;
 use crate::provider::{Provider, UsageResult};
 use crate::services::mcp::McpService;
@@ -213,6 +214,11 @@ impl ProviderService {
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::normalize_provider_alias(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        if matches!(app_type, AppType::Codex) {
+            if let Some(oauth) = extract_oauth_config(&provider.settings_config) {
+                ensure_unique_account(state.db.as_ref(), Some(provider.id.as_str()), &oauth.account_id)?;
+            }
+        }
         Self::validate_provider_alias(state, &app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
 
@@ -266,6 +272,11 @@ impl ProviderService {
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::normalize_provider_alias(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
+        if matches!(app_type, AppType::Codex) {
+            if let Some(oauth) = extract_oauth_config(&provider.settings_config) {
+                ensure_unique_account(state.db.as_ref(), Some(provider.id.as_str()), &oauth.account_id)?;
+            }
+        }
         Self::validate_provider_alias(state, &app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
 

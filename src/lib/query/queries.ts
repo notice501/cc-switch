@@ -10,12 +10,14 @@ import {
   sessionsApi,
   type AppId,
 } from "@/lib/api";
+import { dispatchApi } from "@/lib/api/dispatch";
 import type {
   Provider,
   Settings,
   UsageResult,
   SessionMeta,
   SessionMessage,
+  DispatchStatusSnapshot,
 } from "@/types";
 
 const sortProviders = (
@@ -150,5 +152,15 @@ export const useSessionMessagesQuery = (
     queryFn: async () => sessionsApi.getMessages(providerId!, sourcePath!),
     enabled: Boolean(providerId && sourcePath),
     staleTime: 30 * 1000,
+  });
+};
+
+export const useDispatchStatusQuery = () => {
+  return useQuery<DispatchStatusSnapshot>({
+    queryKey: ["dispatchStatus"],
+    queryFn: async () => dispatchApi.getStatus(),
+    staleTime: 1000,
+    refetchInterval: 2000,
+    refetchIntervalInBackground: true,
   });
 };

@@ -3,6 +3,8 @@
 mod auth;
 mod config;
 mod copilot;
+mod codex_auth;
+mod dispatch;
 mod deeplink;
 mod env;
 mod failover;
@@ -28,6 +30,8 @@ mod workspace;
 pub use auth::*;
 pub use config::*;
 pub use copilot::*;
+pub use codex_auth::*;
+pub use dispatch::*;
 pub use deeplink::*;
 pub use env::*;
 pub use failover::*;

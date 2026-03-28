@@ -62,6 +62,7 @@ import { ProviderPresetSelector } from "./ProviderPresetSelector";
 import { BasicFormFields } from "./BasicFormFields";
 import { ClaudeFormFields } from "./ClaudeFormFields";
 import { CodexFormFields } from "./CodexFormFields";
+import { CodexOAuthSection } from "./CodexOAuthSection";
 import { GeminiFormFields } from "./GeminiFormFields";
 import { OmoFormFields } from "./OmoFormFields";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
@@ -88,6 +89,7 @@ import {
   useOmoDraftState,
   useOpenclawFormState,
   useCopilotAuth,
+  useCodexOAuth,
 } from "./hooks";
 import {
   CLAUDE_DEFAULT_CONFIG,
@@ -357,12 +359,17 @@ export function ProviderForm({
     codexBaseUrl,
     codexModelName,
     codexAuthError,
+    codexOAuth,
+    codexAuthMode,
     setCodexAuth,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelNameChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
+    setCodexAuthMode,
+    applyCodexSettingsPatch,
+    getCodexSettingsObject,
   } = useCodexConfigState({ initialData });
 
   const { configError: codexConfigError, debouncedValidate } =
@@ -386,6 +393,25 @@ export function ProviderForm({
   useEffect(() => {
     form.reset(defaultValues);
   }, [defaultValues, form]);
+
+  const codexSettingsObject = useMemo(
+    () => getCodexSettingsObject(),
+    [getCodexSettingsObject, codexAuth, codexConfig, codexOAuth],
+  );
+  const isCodexOAuthMode = appId === "codex" && codexAuthMode === "oauth";
+
+  const {
+    status: codexOAuthStatus,
+    error: codexOAuthError,
+    isPolling: isCodexOAuthPolling,
+    isRefreshing: isCodexOAuthRefreshing,
+    startLogin: startCodexOAuthLogin,
+    refresh: refreshCodexOAuth,
+  } = useCodexOAuth({
+    providerId,
+    settingsConfig: codexSettingsObject,
+    onSettingsConfigChange: applyCodexSettingsPatch,
+  });
 
   const presetCategoryLabels: Record<string, string> = useMemo(
     () => ({
@@ -694,6 +720,13 @@ export function ProviderForm({
       return;
     }
 
+    if (appId === "codex" && codexAuthMode === "oauth") {
+      if (!codexOAuthStatus?.authenticated) {
+        toast.error("请先完成 Codex OAuth 登录");
+        return;
+      }
+    }
+
     if (category !== "official" && category !== "cloud_provider") {
       if (appId === "claude") {
         if (!baseUrl.trim()) {
@@ -713,7 +746,7 @@ export function ProviderForm({
           return;
         }
       } else if (appId === "codex") {
-        if (!codexBaseUrl.trim()) {
+        if (codexAuthMode !== "oauth" && !codexBaseUrl.trim()) {
           toast.error(
             t("providerForm.endpointRequired", {
               defaultValue: "非官方供应商请填写 API 端点",
@@ -721,7 +754,7 @@ export function ProviderForm({
           );
           return;
         }
-        if (!codexApiKey.trim()) {
+        if (codexAuthMode !== "oauth" && !codexApiKey.trim()) {
           toast.error(
             t("providerForm.apiKeyRequired", {
               defaultValue: "非官方供应商请填写 API Key",
@@ -753,11 +786,7 @@ export function ProviderForm({
 
     if (appId === "codex") {
       try {
-        const authJson = JSON.parse(codexAuth);
-        const configObj = {
-          auth: authJson,
-          config: codexConfig ?? "",
-        };
+        const configObj = getCodexSettingsObject();
         settingsConfig = JSON.stringify(configObj);
       } catch (err) {
         settingsConfig = values.settingsConfig.trim();
@@ -1448,30 +1477,47 @@ export function ProviderForm({
         )}
 
         {appId === "codex" && (
-          <CodexFormFields
-            providerId={providerId}
-            codexApiKey={codexApiKey}
-            onApiKeyChange={handleCodexApiKeyChange}
-            category={category}
-            shouldShowApiKeyLink={shouldShowCodexApiKeyLink}
-            websiteUrl={codexWebsiteUrl}
-            isPartner={isCodexPartner}
-            partnerPromotionKey={codexPartnerPromotionKey}
-            shouldShowSpeedTest={shouldShowSpeedTest}
-            codexBaseUrl={codexBaseUrl}
-            onBaseUrlChange={handleCodexBaseUrlChange}
-            isEndpointModalOpen={isCodexEndpointModalOpen}
-            onEndpointModalToggle={setIsCodexEndpointModalOpen}
-            onCustomEndpointsChange={
-              isEditMode ? undefined : setDraftCustomEndpoints
-            }
-            autoSelect={endpointAutoSelect}
-            onAutoSelectChange={setEndpointAutoSelect}
-            shouldShowModelField={category !== "official"}
-            modelName={codexModelName}
-            onModelNameChange={handleCodexModelNameChange}
-            speedTestEndpoints={speedTestEndpoints}
-          />
+          <div className="space-y-4">
+            <CodexOAuthSection
+              authMode={codexAuthMode}
+              status={codexOAuthStatus}
+              error={codexOAuthError}
+              isPolling={isCodexOAuthPolling}
+              isRefreshing={isCodexOAuthRefreshing}
+              onAuthModeChange={setCodexAuthMode}
+              onLogin={startCodexOAuthLogin}
+              onRefresh={refreshCodexOAuth}
+              onLogout={() => {
+                setCodexAuthMode("manual");
+                applyCodexSettingsPatch({ auth: {}, oauth: null });
+              }}
+            />
+            <CodexFormFields
+              providerId={providerId}
+              codexApiKey={codexApiKey}
+              onApiKeyChange={handleCodexApiKeyChange}
+              category={category}
+              shouldShowApiKeyLink={shouldShowCodexApiKeyLink}
+              websiteUrl={codexWebsiteUrl}
+              isPartner={isCodexPartner}
+              partnerPromotionKey={codexPartnerPromotionKey}
+              shouldShowSpeedTest={shouldShowSpeedTest}
+              codexBaseUrl={codexBaseUrl}
+              onBaseUrlChange={handleCodexBaseUrlChange}
+              isEndpointModalOpen={isCodexEndpointModalOpen}
+              onEndpointModalToggle={setIsCodexEndpointModalOpen}
+              onCustomEndpointsChange={
+                isEditMode ? undefined : setDraftCustomEndpoints
+              }
+              autoSelect={endpointAutoSelect}
+              onAutoSelectChange={setEndpointAutoSelect}
+              shouldShowModelField={category !== "official"}
+              modelName={codexModelName}
+              onModelNameChange={handleCodexModelNameChange}
+              speedTestEndpoints={speedTestEndpoints}
+              authMode={codexAuthMode}
+            />
+          </div>
         )}
 
         {appId === "gemini" && (
@@ -1567,23 +1613,31 @@ export function ProviderForm({
         {/* 配置编辑器：Codex、Claude、Gemini 分别使用不同的编辑器 */}
         {appId === "codex" ? (
           <>
-            <CodexConfigEditor
-              authValue={codexAuth}
-              configValue={codexConfig}
-              onAuthChange={setCodexAuth}
-              onConfigChange={handleCodexConfigChange}
-              useCommonConfig={useCodexCommonConfigFlag}
-              onCommonConfigToggle={handleCodexCommonConfigToggle}
-              commonConfigSnippet={codexCommonConfigSnippet}
-              onCommonConfigSnippetChange={handleCodexCommonConfigSnippetChange}
-              onCommonConfigErrorClear={clearCodexCommonConfigError}
-              commonConfigError={codexCommonConfigError}
-              authError={codexAuthError}
-              configError={codexConfigError}
-              onExtract={handleCodexExtract}
-              isExtracting={isCodexExtracting}
-            />
-            {settingsConfigErrorField}
+            {!isCodexOAuthMode ? (
+              <>
+                <CodexConfigEditor
+                  authValue={codexAuth}
+                  configValue={codexConfig}
+                  onAuthChange={setCodexAuth}
+                  onConfigChange={handleCodexConfigChange}
+                  useCommonConfig={useCodexCommonConfigFlag}
+                  onCommonConfigToggle={handleCodexCommonConfigToggle}
+                  commonConfigSnippet={codexCommonConfigSnippet}
+                  onCommonConfigSnippetChange={handleCodexCommonConfigSnippetChange}
+                  onCommonConfigErrorClear={clearCodexCommonConfigError}
+                  commonConfigError={codexCommonConfigError}
+                  authError={codexAuthError}
+                  configError={codexConfigError}
+                  onExtract={handleCodexExtract}
+                  isExtracting={isCodexExtracting}
+                />
+                {settingsConfigErrorField}
+              </>
+            ) : (
+              <div className="rounded-xl border border-border bg-muted/20 p-4 text-sm text-muted-foreground">
+                OAuth 模式下不需要填写 API 端点、API Key 或手动编辑 `auth.json` / `config.toml`。启用该 Provider 时会直接使用当前登录账号热切换到 live Codex 配置。
+              </div>
+            )}
           </>
         ) : appId === "gemini" ? (
           <>

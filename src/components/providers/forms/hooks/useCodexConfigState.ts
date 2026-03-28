@@ -24,6 +24,10 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
   const [codexBaseUrl, setCodexBaseUrl] = useState("");
   const [codexModelName, setCodexModelName] = useState("");
   const [codexAuthError, setCodexAuthError] = useState("");
+  const [codexOAuth, setCodexOAuthState] = useState<Record<string, unknown> | null>(null);
+  const [codexAuthMode, setCodexAuthModeState] = useState<"manual" | "oauth">(
+    "manual",
+  );
 
   const isUpdatingCodexBaseUrlRef = useRef(false);
   const isUpdatingCodexModelNameRef = useRef(false);
@@ -37,6 +41,12 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       // 设置 auth.json
       const auth = (config as any).auth || {};
       setCodexAuthState(JSON.stringify(auth, null, 2));
+      const oauth =
+        typeof (config as any).oauth === "object" && (config as any).oauth !== null
+          ? ((config as any).oauth as Record<string, unknown>)
+          : null;
+      setCodexOAuthState(oauth);
+      setCodexAuthModeState(oauth ? "oauth" : "manual");
 
       // 设置 config.toml
       const configStr =
@@ -155,6 +165,49 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     [codexAuth, setCodexAuth],
   );
 
+  const getCodexSettingsObject = useCallback((): Record<string, unknown> => {
+    let auth: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(codexAuth || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        auth = parsed as Record<string, unknown>;
+      }
+    } catch {
+      auth = {};
+    }
+
+    return {
+      auth,
+      config: codexConfig ?? "",
+      ...(codexOAuth ? { oauth: codexOAuth } : {}),
+    };
+  }, [codexAuth, codexConfig, codexOAuth]);
+
+  const applyCodexSettingsPatch = useCallback(
+    (patch: Record<string, unknown>) => {
+      if (patch.auth && typeof patch.auth === "object" && !Array.isArray(patch.auth)) {
+        setCodexAuth(JSON.stringify(patch.auth, null, 2));
+      }
+      if (typeof patch.config === "string") {
+        setCodexConfig(patch.config);
+      }
+      const oauth =
+        patch.oauth && typeof patch.oauth === "object" && !Array.isArray(patch.oauth)
+          ? (patch.oauth as Record<string, unknown>)
+          : null;
+      setCodexOAuthState(oauth);
+      setCodexAuthModeState(oauth ? "oauth" : "manual");
+    },
+    [setCodexAuth, setCodexConfig],
+  );
+
+  const setCodexAuthMode = useCallback((mode: "manual" | "oauth") => {
+    setCodexAuthModeState(mode);
+    if (mode === "manual") {
+      setCodexOAuthState(null);
+    }
+  }, []);
+
   // 处理 Codex Base URL 变化
   const handleCodexBaseUrlChange = useCallback(
     (url: string) => {
@@ -211,10 +264,16 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
 
   // 重置配置（用于预设切换）
   const resetCodexConfig = useCallback(
-    (auth: Record<string, unknown>, config: string) => {
+    (
+      auth: Record<string, unknown>,
+      config: string,
+      oauth?: Record<string, unknown> | null,
+    ) => {
       const authString = JSON.stringify(auth, null, 2);
       setCodexAuth(authString);
       setCodexConfig(config);
+      setCodexOAuthState(oauth ?? null);
+      setCodexAuthModeState(oauth ? "oauth" : "manual");
 
       const baseUrl = extractCodexBaseUrl(config);
       if (baseUrl) {
@@ -249,13 +308,18 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     codexBaseUrl,
     codexModelName,
     codexAuthError,
+    codexOAuth,
+    codexAuthMode,
     setCodexAuth,
     setCodexConfig,
+    setCodexAuthMode,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelNameChange,
     handleCodexConfigChange,
     resetCodexConfig,
+    applyCodexSettingsPatch,
+    getCodexSettingsObject,
     getCodexAuthApiKey,
     validateCodexAuth,
   };

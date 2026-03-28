@@ -14,7 +14,7 @@ const DISPATCH_SKILL_ID: &str = "builtin:dispatch-task";
 const DISPATCH_SKILL_NAME: &str = "dispatch-task";
 const DISPATCH_SKILL_DIRECTORY: &str = "dispatch-task";
 const DISPATCH_SKILL_DESCRIPTION: &str =
-    "Run a subtask on a Claude or Codex provider configured in cc-switch, inspect dispatch status/history from Claude Code, and wait for the result in the current Claude Code session.";
+    "Run a subtask on a Claude or Codex provider configured in cc-switch, inspect dispatch status/history from Claude Code, and optionally wait for the result in the current Claude Code session.";
 
 const DISPATCH_SKILL_FILES: &[(&str, &str)] = &[
     (
@@ -122,11 +122,42 @@ fn write_dispatch_skill_files(skill_dir: &Path) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        test_home: Option<std::ffi::OsString>,
+        app_config_dir_name: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(test_home: &str, app_config_dir_name: &str) -> Self {
+            let guard = Self {
+                test_home: std::env::var_os("CC_SWITCH_TEST_HOME"),
+                app_config_dir_name: std::env::var_os("CCSWITCH_APP_CONFIG_DIR_NAME"),
+            };
+            std::env::set_var("CC_SWITCH_TEST_HOME", test_home);
+            std::env::set_var("CCSWITCH_APP_CONFIG_DIR_NAME", app_config_dir_name);
+            guard
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.test_home {
+                Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            match &self.app_config_dir_name {
+                Some(value) => std::env::set_var("CCSWITCH_APP_CONFIG_DIR_NAME", value),
+                None => std::env::remove_var("CCSWITCH_APP_CONFIG_DIR_NAME"),
+            }
+        }
+    }
 
     #[test]
+    #[serial]
     fn dispatch_skill_files_use_instance_config_dir() {
-        std::env::set_var("CC_SWITCH_TEST_HOME", "/tmp/ccswitch-skill-home");
-        std::env::set_var("CCSWITCH_APP_CONFIG_DIR_NAME", ".ccswitch-pro");
+        let _guard = EnvGuard::set("/tmp/ccswitch-skill-home", ".ccswitch-pro");
 
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         write_dispatch_skill_files(temp_dir.path()).expect("write dispatch skill");
@@ -138,9 +169,6 @@ mod tests {
 
         assert!(dispatch.contains("/tmp/ccswitch-skill-home/.ccswitch-pro"));
         assert!(statusline.contains("/tmp/ccswitch-skill-home/.ccswitch-pro"));
-
-        std::env::remove_var("CC_SWITCH_TEST_HOME");
-        std::env::remove_var("CCSWITCH_APP_CONFIG_DIR_NAME");
     }
 }
 

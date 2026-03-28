@@ -65,6 +65,7 @@ class LogsCommand:
 class RunCommand:
     target: str
     timeout_seconds: int
+    wait_for_completion: bool
     task: str
 
 
@@ -101,12 +102,23 @@ def usage_lines() -> list[str]:
         "- /dispatch-task status",
         "- /dispatch-task last",
         "- /dispatch-task logs [count]",
-        "- /dispatch-task <app:provider> [timeout=<seconds>] -- <task text>",
+        "- /dispatch-task <app:provider> [timeout=<seconds>] [wait=true] -- <task text>",
     ]
 
 
 def usage_error(message: str) -> str:
     return "{}\n\nUsage:\n{}".format(message, "\n".join(usage_lines()))
+
+
+def parse_bool_flag(raw: str) -> bool:
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise DispatchError(
+        "Invalid wait value '{}'. Expected true or false.".format(raw)
+    )
 
 
 def parse_command(raw: str) -> Command:
@@ -171,34 +183,45 @@ def parse_command(raw: str) -> Command:
     app, provider_id = parse_target(target)
 
     timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+    wait_for_completion = False
     for token in head_tokens[1:]:
-        if not token.startswith("timeout="):
-            raise DispatchError(
-                "Unexpected argument '{}'. Only timeout=<seconds> is supported.".format(
-                    token
+        if token.startswith("timeout="):
+            raw_timeout = token.split("=", 1)[1].strip()
+            if not raw_timeout:
+                raise DispatchError("timeout=<seconds> requires a numeric value.")
+            try:
+                timeout_seconds = int(raw_timeout, 10)
+            except ValueError as exc:
+                raise DispatchError(
+                    "Invalid timeout '{}'. Expected an integer number of seconds.".format(
+                        raw_timeout
+                    )
+                ) from exc
+            if timeout_seconds < 1 or timeout_seconds > MAX_TIMEOUT_SECONDS:
+                raise DispatchError(
+                    "timeout must be between 1 and {} seconds.".format(
+                        MAX_TIMEOUT_SECONDS
+                    )
                 )
+            continue
+
+        if token.startswith("wait="):
+            raw_wait = token.split("=", 1)[1].strip()
+            if not raw_wait:
+                raise DispatchError("wait=<true|false> requires a value.")
+            wait_for_completion = parse_bool_flag(raw_wait)
+            continue
+
+        raise DispatchError(
+            "Unexpected argument '{}'. Supported options: timeout=<seconds>, wait=<true|false>.".format(
+                token
             )
-        raw_timeout = token.split("=", 1)[1].strip()
-        if not raw_timeout:
-            raise DispatchError("timeout=<seconds> requires a numeric value.")
-        try:
-            timeout_seconds = int(raw_timeout, 10)
-        except ValueError as exc:
-            raise DispatchError(
-                "Invalid timeout '{}'. Expected an integer number of seconds.".format(
-                    raw_timeout
-                )
-            ) from exc
-        if timeout_seconds < 1 or timeout_seconds > MAX_TIMEOUT_SECONDS:
-            raise DispatchError(
-                "timeout must be between 1 and {} seconds.".format(
-                    MAX_TIMEOUT_SECONDS
-                )
-            )
+        )
 
     return RunCommand(
         target="{}:{}".format(app, provider_id),
         timeout_seconds=timeout_seconds,
+        wait_for_completion=wait_for_completion,
         task=task,
     )
 
@@ -428,6 +451,7 @@ def render_status() -> str:
 
         current_run = snapshot.get("currentRun")
         if state == "running" and isinstance(current_run, dict):
+            lines.append("- Run ID: `{}`".format(current_run.get("runId") or "unknown"))
             lines.append("- Target: `{}`".format(current_run.get("target") or "unknown"))
             lines.append("- Provider: `{}`".format(current_run.get("providerName") or "unknown"))
             lines.append("- Started: `{}`".format(format_timestamp(current_run.get("startedAt"))))
@@ -448,6 +472,7 @@ def render_compact_last_run(entry: dict[str, Any]) -> list[str]:
     callback = parse_callback_block(str(entry.get("result") or ""))
     callback_status = callback["status"] if callback else "missing"
     return [
+        "- Last run ID: `{}`".format(entry.get("runId") or "unknown"),
         "- Last target: `{}`".format(entry.get("target") or "unknown"),
         "- Last outcome: `{}`".format(entry.get("status") or "unknown"),
         "- Last callback: `{}`".format(callback_status),
@@ -511,6 +536,7 @@ def render_record(title: str, record: dict[str, Any]) -> str:
     lines = [
         "## {}".format(title),
         "",
+        "- Run ID: `{}`".format(record.get("runId") or "unknown"),
         "- Outcome: `{}`".format(outcome),
         "- Target: `{}`".format(target),
         "- Provider: `{}`".format(provider_name),
@@ -555,6 +581,23 @@ def render_failure(message: str) -> str:
     return "## Dispatch Error\n\n- Error: {}".format(message.strip())
 
 
+def render_started(record: dict[str, Any]) -> str:
+    lines = [
+        "## Dispatch Started",
+        "",
+        "- State: `running`",
+        "- Run ID: `{}`".format(record.get("runId") or "unknown"),
+        "- Target: `{}`".format(record.get("target") or "unknown"),
+        "- Provider: `{}`".format(record.get("providerName") or "unknown"),
+        "- Started: `{}`".format(format_timestamp(record.get("startedAt"))),
+        "- Timeout: `{}` seconds".format(record.get("timeoutSeconds") or "unknown"),
+        "- CWD: `{}`".format(record.get("cwd") or "n/a"),
+        "",
+        "Use `/dispatch-task status` to inspect the running task, `/dispatch-task last` for the completed result, or rerun with `wait=true` if you want the current session to block until completion.",
+    ]
+    return "\n".join(lines)
+
+
 def main() -> int:
     arguments = parse_args()
 
@@ -592,11 +635,15 @@ def main() -> int:
                 "target": command.target,
                 "task": command.task,
                 "timeoutSeconds": command.timeout_seconds,
+                "waitForCompletion": command.wait_for_completion,
                 "cwd": arguments.cwd,
             },
             timeout_seconds=max(command.timeout_seconds + 15, 30),
         )
-        print(render_record("Dispatch Result", payload))
+        if payload.get("completed"):
+            print(render_record("Dispatch Result", payload))
+        else:
+            print(render_started(payload))
         return 0
     except DispatchError as exc:
         print(render_failure(str(exc)))

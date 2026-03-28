@@ -1,8 +1,9 @@
 use serde_json::json;
 
 use cc_switch_lib::{
-    get_claude_settings_path, read_json_file, write_codex_live_atomic, AppError, AppType, McpApps,
-    McpServer, MultiAppConfig, Provider, ProviderMeta, ProviderService,
+    get_claude_settings_path, get_codex_auth_path, read_json_file, write_codex_live_atomic,
+    AppError, AppType, McpApps, McpServer, MultiAppConfig, Provider, ProviderMeta,
+    ProviderService,
 };
 
 #[path = "support.rs"]
@@ -900,4 +901,160 @@ fn provider_service_delete_current_provider_returns_error() {
         ),
         other => panic!("expected Config/Message error, got {other:?}"),
     }
+}
+
+#[test]
+fn provider_service_add_codex_rejects_duplicate_oauth_account() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let future_exp = chrono::Utc::now().timestamp() + 3600;
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "primary".to_string();
+        manager.providers.insert(
+            "primary".to_string(),
+            Provider::with_id(
+                "primary".to_string(),
+                "Primary Codex".to_string(),
+                json!({
+                    "auth": {
+                        "auth_mode": "chatgpt",
+                        "OPENAI_API_KEY": null,
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "at-1",
+                            "refresh_token": "rt-1"
+                        }
+                    },
+                    "oauth": {
+                        "authMode": "chatgpt",
+                        "accountId": "acct-1",
+                        "accessToken": "at-1",
+                        "refreshToken": "rt-1",
+                        "accessTokenExpiresAt": future_exp
+                    },
+                    "config": "model = \"gpt-5.4\""
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    let duplicate = Provider::with_id(
+        "secondary".to_string(),
+        "Secondary Codex".to_string(),
+        json!({
+            "auth": {
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": null,
+                "tokens": {
+                    "account_id": "acct-1",
+                    "access_token": "at-2",
+                    "refresh_token": "rt-2"
+                }
+            },
+            "oauth": {
+                "authMode": "chatgpt",
+                "accountId": "acct-1",
+                "accessToken": "at-2",
+                "refreshToken": "rt-2",
+                "accessTokenExpiresAt": future_exp
+            },
+            "config": "model = \"gpt-5.4\""
+        }),
+        None,
+    );
+
+    let err = ProviderService::add(&state, AppType::Codex, duplicate)
+        .expect_err("duplicate oauth account should be rejected");
+    assert!(
+        err.to_string().contains("Primary Codex"),
+        "expected duplicate account error to mention existing provider, got {err}"
+    );
+}
+
+#[test]
+fn provider_service_switch_codex_oauth_writes_chatgpt_auth_json() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let future_exp = chrono::Utc::now().timestamp() + 3600;
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "manual".to_string();
+        manager.providers.insert(
+            "manual".to_string(),
+            Provider::with_id(
+                "manual".to_string(),
+                "Manual".to_string(),
+                json!({
+                    "auth": {"OPENAI_API_KEY": "manual-key"},
+                    "config": "model = \"gpt-5.4\""
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "oauth".to_string(),
+            Provider::with_id(
+                "oauth".to_string(),
+                "OAuth".to_string(),
+                json!({
+                    "auth": {
+                        "auth_mode": "chatgpt",
+                        "OPENAI_API_KEY": null,
+                        "tokens": {
+                            "id_token": "id-1",
+                            "account_id": "acct-oauth",
+                            "access_token": "access-oauth",
+                            "refresh_token": "refresh-oauth"
+                        },
+                        "last_refresh": "2026-03-28T00:00:00Z"
+                    },
+                    "oauth": {
+                        "authMode": "chatgpt",
+                        "accountId": "acct-oauth",
+                        "accessToken": "access-oauth",
+                        "refreshToken": "refresh-oauth",
+                        "idToken": "id-1",
+                        "accessTokenExpiresAt": future_exp
+                    },
+                    "config": "model = \"gpt-5.4\""
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    ProviderService::switch(&state, AppType::Codex, "oauth")
+        .expect("switch to oauth provider should succeed");
+
+    let auth_value: serde_json::Value =
+        read_json_file(&get_codex_auth_path()).expect("read oauth auth.json");
+    assert_eq!(
+        auth_value.get("auth_mode").and_then(|value| value.as_str()),
+        Some("chatgpt")
+    );
+    assert_eq!(
+        auth_value
+            .get("tokens")
+            .and_then(|tokens| tokens.get("account_id"))
+            .and_then(|value| value.as_str()),
+        Some("acct-oauth")
+    );
 }

@@ -9,6 +9,7 @@ interface EndpointCandidate {
 
 interface CodexFormFieldsProps {
   providerId?: string;
+  authMode?: "manual" | "oauth";
   // API Key
   codexApiKey: string;
   onApiKeyChange: (key: string) => void;
@@ -39,6 +40,7 @@ interface CodexFormFieldsProps {
 
 export function CodexFormFields({
   providerId,
+  authMode = "manual",
   codexApiKey,
   onApiKeyChange,
   category,
@@ -60,32 +62,35 @@ export function CodexFormFields({
   speedTestEndpoints,
 }: CodexFormFieldsProps) {
   const { t } = useTranslation();
+  const isOAuthMode = authMode === "oauth";
 
   return (
     <>
       {/* Codex API Key 输入框 */}
-      <ApiKeySection
-        id="codexApiKey"
-        label="API Key"
-        value={codexApiKey}
-        onChange={onApiKeyChange}
-        category={category}
-        shouldShowLink={shouldShowApiKeyLink}
-        websiteUrl={websiteUrl}
-        isPartner={isPartner}
-        partnerPromotionKey={partnerPromotionKey}
-        placeholder={{
-          official: t("providerForm.codexOfficialNoApiKey", {
-            defaultValue: "官方供应商无需 API Key",
-          }),
-          thirdParty: t("providerForm.codexApiKeyAutoFill", {
-            defaultValue: "输入 API Key，将自动填充到配置",
-          }),
-        }}
-      />
+      {!isOAuthMode && (
+        <ApiKeySection
+          id="codexApiKey"
+          label="API Key"
+          value={codexApiKey}
+          onChange={onApiKeyChange}
+          category={category}
+          shouldShowLink={shouldShowApiKeyLink}
+          websiteUrl={websiteUrl}
+          isPartner={isPartner}
+          partnerPromotionKey={partnerPromotionKey}
+          placeholder={{
+            official: t("providerForm.codexOfficialNoApiKey", {
+              defaultValue: "官方供应商无需 API Key",
+            }),
+            thirdParty: t("providerForm.codexApiKeyAutoFill", {
+              defaultValue: "输入 API Key，将自动填充到配置",
+            }),
+          }}
+        />
+      )}
 
       {/* Codex Base URL 输入框 */}
-      {shouldShowSpeedTest && (
+      {!isOAuthMode && shouldShowSpeedTest && (
         <EndpointField
           id="codexBaseUrl"
           label={t("codexConfig.apiUrlLabel")}
@@ -98,7 +103,7 @@ export function CodexFormFields({
       )}
 
       {/* Codex Model Name 输入框 */}
-      {shouldShowModelField && onModelNameChange && (
+      {!isOAuthMode && shouldShowModelField && onModelNameChange && (
         <div className="space-y-2">
           <label
             htmlFor="codexModelName"
@@ -129,7 +134,7 @@ export function CodexFormFields({
       )}
 
       {/* 端点测速弹窗 - Codex */}
-      {shouldShowSpeedTest && isEndpointModalOpen && (
+      {!isOAuthMode && shouldShowSpeedTest && isEndpointModalOpen && (
         <EndpointSpeedTest
           appId="codex"
           providerId={providerId}

@@ -14,6 +14,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::process::Command;
+use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
 use crate::app_config::AppType;
@@ -43,6 +44,7 @@ pub struct DispatchDiscovery {
 struct DispatchApiState {
     db: Arc<Database>,
     token: Arc<String>,
+    active_run_id: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,27 +83,44 @@ struct DispatchRunRequest {
     task: String,
     timeout_seconds: Option<u64>,
     cwd: Option<String>,
+    wait_for_completion: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DispatchRunResponse {
-    ok: bool,
+    accepted: bool,
+    completed: bool,
+    run_id: String,
     target: String,
     provider_name: String,
-    status: &'static str,
-    timed_out: bool,
-    exit_code: Option<i32>,
-    duration_ms: u128,
+    state: &'static str,
+    started_at: i64,
+    timeout_seconds: u64,
     cwd: String,
-    result: String,
-    stdout: String,
-    stderr: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timed_out: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stderr: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DispatchHistoryEntry {
+    #[serde(default)]
+    run_id: String,
     timestamp: i64,
     target: String,
     provider_name: String,
@@ -118,18 +137,20 @@ struct DispatchHistoryEntry {
     stderr: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DispatchStatusSnapshot {
+pub struct DispatchStatusSnapshot {
     state: String,
     updated_at: i64,
     current_run: Option<DispatchActiveRun>,
     last_run: Option<DispatchStatusRun>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DispatchActiveRun {
+pub struct DispatchActiveRun {
+    #[serde(default)]
+    run_id: String,
     started_at: i64,
     target: String,
     provider_name: String,
@@ -137,9 +158,11 @@ struct DispatchActiveRun {
     timeout_seconds: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DispatchStatusRun {
+pub struct DispatchStatusRun {
+    #[serde(default)]
+    run_id: String,
     timestamp: i64,
     target: String,
     provider_name: String,
@@ -201,6 +224,7 @@ pub fn start(db: Arc<Database>) -> Result<DispatchDiscovery, AppError> {
         .with_state(DispatchApiState {
             db,
             token: Arc::new(discovery.token.clone()),
+            active_run_id: Arc::new(Mutex::new(None)),
         });
 
     tauri::async_runtime::spawn(async move {
@@ -265,8 +289,10 @@ async fn run_dispatch(
     let parsed_target = parse_target(&request.target)?;
     let cwd = normalize_cwd(request.cwd.as_deref())?;
     let timeout_seconds = normalize_timeout(request.timeout_seconds);
+    let wait_for_completion = request.wait_for_completion.unwrap_or(false);
+    let task = request.task.trim().to_string();
 
-    if request.task.trim().is_empty() {
+    if task.is_empty() {
         return Err(bad_request("Task content cannot be empty"));
     }
 
@@ -278,89 +304,66 @@ async fn run_dispatch(
         AppType::Codex => RunnerKind::Codex,
         _ => return Err(bad_request("Only Claude and Codex targets are supported")),
     };
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = Utc::now().timestamp();
+    let cwd_display = cwd.display().to_string();
+
+    claim_active_run(&state.active_run_id, &run_id).await?;
 
     write_status_snapshot(DispatchStatusSnapshot {
         state: "running".to_string(),
-        updated_at: Utc::now().timestamp(),
+        updated_at: started_at,
         current_run: Some(DispatchActiveRun {
-            started_at: Utc::now().timestamp(),
+            run_id: run_id.clone(),
+            started_at,
             target: request.target.clone(),
             provider_name: provider_name.clone(),
-            cwd: cwd.display().to_string(),
+            cwd: cwd_display.clone(),
             timeout_seconds,
         }),
         last_run: load_last_history_summary(),
     });
+    let (tx, rx) = oneshot::channel();
+    let active_run_id = state.active_run_id.clone();
+    let target = request.target.clone();
+    let provider_name_for_task = provider.name.clone();
+    let run_id_for_task = run_id.clone();
+    let cwd_for_task = cwd.clone();
 
-    let run_result = runner
-        .run(&provider, &cwd, request.task.trim(), timeout_seconds)
+    tauri::async_runtime::spawn(async move {
+        let response = execute_dispatch_run(
+            run_id_for_task.clone(),
+            started_at,
+            target,
+            provider_name_for_task,
+            cwd_for_task,
+            timeout_seconds,
+            task,
+            provider,
+            runner,
+        )
         .await;
+        release_active_run(&active_run_id, &run_id_for_task).await;
+        let _ = tx.send(response);
+    });
 
-    let output = match run_result {
-        Ok(output) => output,
-        Err(err) => {
-            let error_message = err.to_string();
-            let failure = RunnerOutput {
-                status: "failed",
-                timed_out: false,
-                exit_code: None,
-                duration_ms: 0,
-                result: error_message.clone(),
-                stdout: String::new(),
-                stderr: error_message.clone(),
-            };
-            let history_entry = DispatchHistoryEntry {
-                timestamp: Utc::now().timestamp(),
-                target: request.target.clone(),
-                provider_name,
-                cwd: cwd.display().to_string(),
-                timeout_seconds,
-                status: failure.status.to_string(),
-                timed_out: failure.timed_out,
-                exit_code: failure.exit_code,
-                duration_ms: failure.duration_ms,
-                result_preview: truncate_preview(&failure.result),
-                result: failure.result.clone(),
-                stdout: failure.stdout.clone(),
-                stderr: failure.stderr.clone(),
-            };
-            append_history(history_entry.clone());
-            write_status_snapshot(finished_status_snapshot(&history_entry));
-            return Err(internal_error(err));
-        }
-    };
+    if wait_for_completion {
+        let response = rx.await.map_err(|_| {
+            internal_error(AppError::Message(
+                "Dispatch run stopped before returning a result".to_string(),
+            ))
+        })?;
+        return Ok(Json(response));
+    }
 
-    let history_entry = DispatchHistoryEntry {
-        timestamp: Utc::now().timestamp(),
-        target: request.target.clone(),
-        provider_name: provider.name.clone(),
-        cwd: cwd.display().to_string(),
+    Ok(Json(DispatchRunResponse::accepted(
+        run_id,
+        request.target,
+        provider_name,
+        started_at,
         timeout_seconds,
-        status: output.status.to_string(),
-        timed_out: output.timed_out,
-        exit_code: output.exit_code,
-        duration_ms: output.duration_ms,
-        result_preview: truncate_preview(&output.result),
-        result: output.result.clone(),
-        stdout: output.stdout.clone(),
-        stderr: output.stderr.clone(),
-    };
-    append_history(history_entry.clone());
-    write_status_snapshot(finished_status_snapshot(&history_entry));
-
-    Ok(Json(DispatchRunResponse {
-        ok: output.status == "succeeded",
-        target: request.target,
-        provider_name: provider.name,
-        status: output.status,
-        timed_out: output.timed_out,
-        exit_code: output.exit_code,
-        duration_ms: output.duration_ms,
-        cwd: cwd.display().to_string(),
-        result: output.result,
-        stdout: output.stdout,
-        stderr: output.stderr,
-    }))
+        cwd_display,
+    )))
 }
 
 impl RunnerKind {
@@ -387,8 +390,10 @@ async fn run_claude(
     let envs = extract_claude_env(&provider.settings_config)?;
     let wrapped_task = wrap_task_for_main_agent(task);
     let permission_mode = claude_dispatch_permission_mode(&provider.settings_config);
+    let claude_executable = resolve_cli_executable("claude")
+        .ok_or_else(|| missing_cli_error("claude"))?;
 
-    let mut command = Command::new("claude");
+    let mut command = Command::new(&claude_executable);
     command
         .current_dir(cwd)
         .arg("-p")
@@ -401,6 +406,7 @@ async fn run_claude(
         .arg("--")
         .arg(&wrapped_task)
         .kill_on_drop(true);
+    prepend_command_dir_to_path(&mut command, &claude_executable);
 
     for key in [
         "ANTHROPIC_BASE_URL",
@@ -471,8 +477,10 @@ async fn run_codex(
         .map_err(|e| AppError::Message(format!("序列化 Codex auth.json 失败: {e}")))?;
     fs::write(&auth_path, auth_payload).map_err(|e| AppError::io(&auth_path, e))?;
     fs::write(&config_path, config).map_err(|e| AppError::io(&config_path, e))?;
+    let codex_executable = resolve_cli_executable("codex")
+        .ok_or_else(|| missing_cli_error("codex"))?;
 
-    let mut command = Command::new("codex");
+    let mut command = Command::new(&codex_executable);
     command
         .current_dir(cwd)
         .arg("exec")
@@ -489,6 +497,7 @@ async fn run_codex(
         .env("CODEX_HOME", &codex_dir)
         .env_remove("OPENAI_API_KEY")
         .env_remove("OPENAI_BASE_URL");
+    prepend_command_dir_to_path(&mut command, &codex_executable);
 
     run_subprocess(command, timeout_seconds, Some(last_message_path)).await
 }
@@ -558,6 +567,285 @@ async fn run_subprocess(
             })
         }
     }
+}
+
+async fn execute_dispatch_run(
+    run_id: String,
+    started_at: i64,
+    target: String,
+    provider_name: String,
+    cwd: PathBuf,
+    timeout_seconds: u64,
+    task: String,
+    provider: Provider,
+    runner: RunnerKind,
+) -> DispatchRunResponse {
+    let output = match runner.run(&provider, &cwd, &task, timeout_seconds).await {
+        Ok(output) => output,
+        Err(err) => failure_output_from_error(err),
+    };
+    let cwd_display = cwd.display().to_string();
+    let history_entry = history_entry_from_output(
+        run_id.clone(),
+        target.clone(),
+        provider_name.clone(),
+        cwd_display.clone(),
+        timeout_seconds,
+        output,
+    );
+    append_history(history_entry.clone());
+    write_status_snapshot(finished_status_snapshot(&history_entry));
+
+    DispatchRunResponse::completed(
+        run_id,
+        target,
+        provider_name,
+        started_at,
+        timeout_seconds,
+        cwd_display,
+        &history_entry,
+    )
+}
+
+async fn claim_active_run(
+    active_run_id: &Arc<Mutex<Option<String>>>,
+    run_id: &str,
+) -> Result<(), (StatusCode, Json<ApiErrorResponse>)> {
+    let mut current = active_run_id.lock().await;
+    if let Some(existing) = current.as_ref() {
+        return Err(conflict(format!(
+            "A dispatch run is already active (`{existing}`). Use `/dispatch-task status` to inspect it."
+        )));
+    }
+    *current = Some(run_id.to_string());
+    Ok(())
+}
+
+async fn release_active_run(active_run_id: &Arc<Mutex<Option<String>>>, run_id: &str) {
+    let mut current = active_run_id.lock().await;
+    if current.as_deref() == Some(run_id) {
+        *current = None;
+    }
+}
+
+fn failure_output_from_error(err: AppError) -> RunnerOutput {
+    let error_message = err.to_string();
+    RunnerOutput {
+        status: "failed",
+        timed_out: false,
+        exit_code: None,
+        duration_ms: 0,
+        result: error_message.clone(),
+        stdout: String::new(),
+        stderr: error_message,
+    }
+}
+
+fn history_entry_from_output(
+    run_id: String,
+    target: String,
+    provider_name: String,
+    cwd: String,
+    timeout_seconds: u64,
+    output: RunnerOutput,
+) -> DispatchHistoryEntry {
+    DispatchHistoryEntry {
+        run_id,
+        timestamp: Utc::now().timestamp(),
+        target,
+        provider_name,
+        cwd,
+        timeout_seconds,
+        status: output.status.to_string(),
+        timed_out: output.timed_out,
+        exit_code: output.exit_code,
+        duration_ms: output.duration_ms,
+        result_preview: truncate_preview(&output.result),
+        result: output.result,
+        stdout: output.stdout,
+        stderr: output.stderr,
+    }
+}
+
+impl DispatchRunResponse {
+    fn accepted(
+        run_id: String,
+        target: String,
+        provider_name: String,
+        started_at: i64,
+        timeout_seconds: u64,
+        cwd: String,
+    ) -> Self {
+        Self {
+            accepted: true,
+            completed: false,
+            run_id,
+            target,
+            provider_name,
+            state: "running",
+            started_at,
+            timeout_seconds,
+            cwd,
+            ok: None,
+            status: None,
+            timed_out: None,
+            exit_code: None,
+            duration_ms: None,
+            result: None,
+            stdout: None,
+            stderr: None,
+        }
+    }
+
+    fn completed(
+        run_id: String,
+        target: String,
+        provider_name: String,
+        started_at: i64,
+        timeout_seconds: u64,
+        cwd: String,
+        history_entry: &DispatchHistoryEntry,
+    ) -> Self {
+        let status = history_entry.status.as_str();
+        let result_status = if status == "succeeded" {
+            "succeeded"
+        } else if status == "timed_out" {
+            "timed_out"
+        } else {
+            "failed"
+        };
+
+        Self {
+            accepted: true,
+            completed: true,
+            run_id,
+            target,
+            provider_name,
+            state: "finished",
+            started_at,
+            timeout_seconds,
+            cwd,
+            ok: Some(result_status == "succeeded"),
+            status: Some(result_status),
+            timed_out: Some(history_entry.timed_out),
+            exit_code: history_entry.exit_code,
+            duration_ms: Some(history_entry.duration_ms),
+            result: Some(history_entry.result.clone()),
+            stdout: Some(history_entry.stdout.clone()),
+            stderr: Some(history_entry.stderr.clone()),
+        }
+    }
+}
+
+fn resolve_cli_executable(tool: &str) -> Option<PathBuf> {
+    for dir in cli_search_paths() {
+        for candidate in cli_executable_candidates(tool, &dir) {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn cli_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(path_value) = std::env::var_os("PATH") {
+        for path in std::env::split_paths(&path_value) {
+            push_unique_search_path(&mut paths, path);
+        }
+    }
+
+    let home = dirs::home_dir().unwrap_or_default();
+    if !home.as_os_str().is_empty() {
+        for path in [
+            home.join(".deskclaw").join("node").join("bin"),
+            home.join(".local").join("bin"),
+            home.join(".npm-global").join("bin"),
+            home.join(".n").join("bin"),
+            home.join(".volta").join("bin"),
+            home.join(".yarn").join("bin"),
+            home.join(".bun").join("bin"),
+            home.join("bin"),
+        ] {
+            push_unique_search_path(&mut paths, path);
+        }
+
+        let fnm_base = home.join(".local").join("state").join("fnm_multishells");
+        if let Ok(entries) = std::fs::read_dir(&fnm_base) {
+            for entry in entries.flatten() {
+                push_unique_search_path(&mut paths, entry.path().join("bin"));
+            }
+        }
+
+        let nvm_base = home.join(".nvm").join("versions").join("node");
+        if let Ok(entries) = std::fs::read_dir(&nvm_base) {
+            for entry in entries.flatten() {
+                push_unique_search_path(&mut paths, entry.path().join("bin"));
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        push_unique_search_path(&mut paths, PathBuf::from("/opt/homebrew/bin"));
+        push_unique_search_path(&mut paths, PathBuf::from("/usr/local/bin"));
+        push_unique_search_path(&mut paths, PathBuf::from("/usr/bin"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        push_unique_search_path(&mut paths, PathBuf::from("/usr/local/bin"));
+        push_unique_search_path(&mut paths, PathBuf::from("/usr/bin"));
+    }
+
+    paths
+}
+
+fn cli_executable_candidates(tool: &str, dir: &Path) -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            dir.join(format!("{tool}.cmd")),
+            dir.join(format!("{tool}.exe")),
+            dir.join(tool),
+        ]
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![dir.join(tool)]
+    }
+}
+
+fn push_unique_search_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn prepend_command_dir_to_path(command: &mut Command, executable: &Path) {
+    let Some(dir) = executable.parent() else {
+        return;
+    };
+
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(current_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&current_path));
+    }
+    if let Ok(joined) = std::env::join_paths(paths) {
+        command.env("PATH", joined);
+    }
+}
+
+fn missing_cli_error(tool: &str) -> AppError {
+    AppError::Message(format!(
+        "Required CLI tool '{tool}' is not installed or not found in PATH/common install directories"
+    ))
 }
 
 fn extract_claude_env(settings: &Value) -> Result<HashMap<String, String>, AppError> {
@@ -921,6 +1209,22 @@ fn initialize_status_snapshot() {
     });
 }
 
+pub fn read_status_snapshot() -> Result<DispatchStatusSnapshot, AppError> {
+    let path = status_path();
+    if !path.exists() {
+        return Ok(DispatchStatusSnapshot {
+            state: "idle".to_string(),
+            updated_at: Utc::now().timestamp(),
+            current_run: None,
+            last_run: load_last_history_summary(),
+        });
+    }
+
+    let raw = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
+    serde_json::from_str(&raw)
+        .map_err(|e| AppError::Message(format!("解析 Dispatch 状态文件失败: {e}")))
+}
+
 fn load_last_history_summary() -> Option<DispatchStatusRun> {
     let path = get_app_config_dir().join(HISTORY_FILE_NAME);
     let raw = fs::read_to_string(path).ok()?;
@@ -949,6 +1253,7 @@ fn truncate_preview(text: &str) -> String {
 impl From<DispatchHistoryEntry> for DispatchStatusRun {
     fn from(entry: DispatchHistoryEntry) -> Self {
         Self {
+            run_id: entry.run_id,
             timestamp: entry.timestamp,
             target: entry.target,
             provider_name: entry.provider_name,
@@ -989,6 +1294,15 @@ fn unauthorized(message: impl Into<String>) -> (StatusCode, Json<ApiErrorRespons
     )
 }
 
+fn conflict(message: impl Into<String>) -> (StatusCode, Json<ApiErrorResponse>) {
+    (
+        StatusCode::CONFLICT,
+        Json(ApiErrorResponse {
+            error: message.into(),
+        }),
+    )
+}
+
 fn internal_error(err: AppError) -> (StatusCode, Json<ApiErrorResponse>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1003,7 +1317,7 @@ mod tests {
     use super::{
         claude_dispatch_permission_mode, dispatch_name_slug, normalize_timeout, parse_target,
         preferred_dispatch_selector, provider_is_dispatchable, wrap_task_for_main_agent,
-        ParsedTarget, MAIN_AGENT_CALLBACK_TAG,
+        DispatchHistoryEntry, DispatchStatusSnapshot, ParsedTarget, MAIN_AGENT_CALLBACK_TAG,
     };
     use crate::app_config::AppType;
     use crate::provider::Provider;
@@ -1120,5 +1434,51 @@ mod tests {
         };
 
         assert_eq!(preferred_dispatch_selector(&provider), "aliyun-provider");
+    }
+
+    #[test]
+    fn legacy_history_entries_without_run_id_still_deserialize() {
+        let entry: DispatchHistoryEntry = serde_json::from_value(json!({
+            "timestamp": 1,
+            "target": "codex:current",
+            "providerName": "Codex",
+            "cwd": "/tmp/project",
+            "timeoutSeconds": 120,
+            "status": "succeeded",
+            "timedOut": false,
+            "exitCode": 0,
+            "durationMs": 1500,
+            "resultPreview": "done",
+            "result": "done",
+            "stdout": "",
+            "stderr": ""
+        }))
+        .expect("legacy history entry should deserialize");
+
+        assert_eq!(entry.run_id, "");
+    }
+
+    #[test]
+    fn legacy_status_snapshot_without_run_id_still_deserializes() {
+        let snapshot: DispatchStatusSnapshot = serde_json::from_value(json!({
+            "state": "idle",
+            "updatedAt": 1,
+            "currentRun": null,
+            "lastRun": {
+                "timestamp": 1,
+                "target": "codex:current",
+                "providerName": "Codex",
+                "cwd": "/tmp/project",
+                "timeoutSeconds": 120,
+                "status": "succeeded",
+                "timedOut": false,
+                "exitCode": 0,
+                "durationMs": 1500,
+                "resultPreview": "done"
+            }
+        }))
+        .expect("legacy status snapshot should deserialize");
+
+        assert_eq!(snapshot.last_run.expect("last run").run_id, "");
     }
 }

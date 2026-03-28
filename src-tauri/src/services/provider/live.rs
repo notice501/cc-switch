@@ -9,6 +9,7 @@ use toml_edit::{DocumentMut, Item, TableLike};
 
 use crate::app_config::AppType;
 use crate::codex_config::{get_codex_auth_path, get_codex_config_path};
+use crate::codex_oauth::persist_oauth_refresh_if_needed;
 use crate::config::{delete_file, get_claude_settings_path, read_json_file, write_json_file};
 use crate::database::Database;
 use crate::error::AppError;
@@ -467,7 +468,11 @@ pub(crate) fn build_effective_settings_with_common_config(
     provider: &Provider,
 ) -> Result<Value, AppError> {
     let snippet = db.get_config_snippet(app_type.as_str())?;
-    let mut effective_settings = provider.settings_config.clone();
+    let mut effective_settings = if matches!(app_type, AppType::Codex) {
+        persist_oauth_refresh_if_needed(db, provider, false)?
+    } else {
+        provider.settings_config.clone()
+    };
 
     if provider_uses_common_config(app_type, provider, snippet.as_deref()) {
         if let Some(snippet_text) = snippet.as_deref() {

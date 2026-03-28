@@ -74,6 +74,19 @@ export function EditProviderDialog({
         return;
       }
 
+      if (
+        appId === "codex" &&
+        provider.settingsConfig &&
+        typeof provider.settingsConfig === "object" &&
+        (provider.settingsConfig as Record<string, unknown>).oauth
+      ) {
+        if (!cancelled) {
+          setLiveSettings(null);
+          setHasLoadedLive(true);
+        }
+        return;
+      }
+
       if (appId === "openclaw") {
         try {
           const live = await openclawApi.getLiveProvider(provider.id);
