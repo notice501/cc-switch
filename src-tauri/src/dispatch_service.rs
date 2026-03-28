@@ -17,7 +17,7 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::app_config::AppType;
-use crate::config::get_app_config_dir;
+use crate::config::{get_app_config_dir, sanitize_provider_name};
 use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
@@ -67,6 +67,7 @@ struct DispatchProvidersResponse {
 #[serde(rename_all = "camelCase")]
 struct DispatchProviderTarget {
     target: String,
+    canonical_target: String,
     app: String,
     provider_id: String,
     provider_name: String,
@@ -154,7 +155,7 @@ struct DispatchStatusRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedTarget {
     app: AppType,
-    provider_id: String,
+    provider_selector: String,
 }
 
 #[derive(Debug)]
@@ -385,13 +386,14 @@ async fn run_claude(
 ) -> Result<RunnerOutput, AppError> {
     let envs = extract_claude_env(&provider.settings_config)?;
     let wrapped_task = wrap_task_for_main_agent(task);
+    let permission_mode = claude_dispatch_permission_mode(&provider.settings_config);
 
     let mut command = Command::new("claude");
     command
         .current_dir(cwd)
         .arg("-p")
         .arg("--permission-mode")
-        .arg("dontAsk")
+        .arg(permission_mode)
         .arg("--disable-slash-commands")
         .arg("--no-session-persistence")
         .arg("--add-dir")
@@ -415,6 +417,23 @@ async fn run_claude(
     command.envs(envs.iter().map(|(k, v)| (k, v)));
 
     run_subprocess(command, timeout_seconds, None).await
+}
+
+fn claude_dispatch_permission_mode(settings: &Value) -> &'static str {
+    match settings
+        .get("dispatchPermissionMode")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some("acceptEdits") => "acceptEdits",
+        Some("default") => "default",
+        Some("dontAsk") => "dontAsk",
+        Some("plan") => "plan",
+        Some("auto") => "auto",
+        Some("bypassPermissions") => "bypassPermissions",
+        _ => "bypassPermissions",
+    }
 }
 
 async fn run_codex(
@@ -582,13 +601,26 @@ fn collect_dispatch_providers(
 
         let current_id = crate::settings::get_effective_current_provider(db, &app)?.unwrap_or_default();
         let all = db.get_all_providers(app.as_str())?;
+        let mut selector_counts = HashMap::new();
+        for provider in all.values() {
+            let selector = preferred_dispatch_selector(provider);
+            *selector_counts.entry(selector).or_insert(0usize) += 1;
+        }
         for provider in all.values() {
             let effective_settings = build_effective_settings_with_common_config(db, &app, provider)?;
             if !provider_is_dispatchable(&app, &effective_settings) {
                 continue;
             }
+            let preferred_selector = preferred_dispatch_selector(provider);
+            let preferred_is_unique = selector_counts.get(&preferred_selector).copied().unwrap_or_default() == 1;
+            let target_selector = if preferred_is_unique {
+                preferred_selector
+            } else {
+                provider.id.clone()
+            };
             providers.push(DispatchProviderTarget {
-                target: format!("{}:{}", app.as_str(), provider.id),
+                target: format!("{}:{}", app.as_str(), target_selector),
+                canonical_target: format!("{}:{}", app.as_str(), provider.id),
                 app: app.as_str().to_string(),
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
@@ -605,6 +637,38 @@ fn collect_dispatch_providers(
     });
 
     Ok(providers)
+}
+
+fn preferred_dispatch_selector(provider: &Provider) -> String {
+    let preferred = provider
+        .alias
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase)
+        .unwrap_or_else(|| dispatch_name_slug(&provider.name));
+
+    if preferred.is_empty() {
+        provider.id.clone()
+    } else {
+        preferred
+    }
+}
+
+fn dispatch_name_slug(name: &str) -> String {
+    let sanitized = sanitize_provider_name(name);
+    let mut out = String::with_capacity(sanitized.len());
+    let mut last_dash = false;
+    for ch in sanitized.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
 }
 
 fn provider_is_dispatchable(app: &AppType, settings: &Value) -> bool {
@@ -649,18 +713,73 @@ Assigned subtask:
 }
 
 fn load_effective_provider(db: &Arc<Database>, target: &ParsedTarget) -> Result<Provider, AppError> {
-    let provider = db
-        .get_provider_by_id(&target.provider_id, target.app.as_str())?
-        .ok_or_else(|| {
-            AppError::Message(format!(
-                "Dispatch target '{}' does not exist in cc-switch",
-                format!("{}:{}", target.app.as_str(), target.provider_id)
-            ))
-        })?;
+    let provider = resolve_dispatch_provider(db, target)?.ok_or_else(|| {
+        AppError::Message(format!(
+            "Dispatch target '{}' does not exist in cc-switch",
+            format!("{}:{}", target.app.as_str(), target.provider_selector)
+        ))
+    })?;
 
     let mut effective = provider.clone();
     effective.settings_config = build_effective_settings_with_common_config(db, &target.app, &provider)?;
     Ok(effective)
+}
+
+fn resolve_dispatch_provider(
+    db: &Arc<Database>,
+    target: &ParsedTarget,
+) -> Result<Option<Provider>, AppError> {
+    let selector = target.provider_selector.trim();
+    if selector.eq_ignore_ascii_case("current") {
+        let current_id =
+            crate::settings::get_effective_current_provider(db, &target.app)?.unwrap_or_default();
+        if current_id.is_empty() {
+            return Ok(None);
+        }
+        return db.get_provider_by_id(&current_id, target.app.as_str());
+    }
+
+    if let Some(provider) = db.get_provider_by_id(selector, target.app.as_str())? {
+        return Ok(Some(provider));
+    }
+
+    let selector_lower = selector.to_lowercase();
+    let providers = db.get_all_providers(target.app.as_str())?;
+
+    if let Some(provider) = providers
+        .values()
+        .find(|provider| {
+            provider
+                .alias
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_lowercase)
+                .as_deref()
+                == Some(selector_lower.as_str())
+        })
+        .cloned()
+    {
+        return Ok(Some(provider));
+    }
+
+    if let Some(provider) = providers
+        .values()
+        .find(|provider| dispatch_name_slug(&provider.name) == selector_lower)
+        .cloned()
+    {
+        return Ok(Some(provider));
+    }
+
+    if let Some(provider) = providers
+        .values()
+        .find(|provider| provider.name.eq_ignore_ascii_case(selector))
+        .cloned()
+    {
+        return Ok(Some(provider));
+    }
+
+    Ok(None)
 }
 
 fn parse_dispatchable_app(raw: &str) -> Result<AppType, (StatusCode, Json<ApiErrorResponse>)> {
@@ -672,9 +791,9 @@ fn parse_dispatchable_app(raw: &str) -> Result<AppType, (StatusCode, Json<ApiErr
 }
 
 fn parse_target(target: &str) -> Result<ParsedTarget, (StatusCode, Json<ApiErrorResponse>)> {
-    let Some((app, provider_id)) = target.split_once(':') else {
+    let Some((app, provider_selector)) = target.split_once(':') else {
         return Err(bad_request(
-            "Target must use the form 'claude:<provider_id>' or 'codex:<provider_id>'",
+            "Target must use the form 'claude:<provider>' or 'codex:<provider>'",
         ));
     };
 
@@ -688,14 +807,14 @@ fn parse_target(target: &str) -> Result<ParsedTarget, (StatusCode, Json<ApiError
         }
     };
 
-    let provider_id = provider_id.trim();
-    if provider_id.is_empty() {
-        return Err(bad_request("Target provider id cannot be empty"));
+    let provider_selector = provider_selector.trim();
+    if provider_selector.is_empty() {
+        return Err(bad_request("Target provider cannot be empty"));
     }
 
     Ok(ParsedTarget {
         app,
-        provider_id: provider_id.to_string(),
+        provider_selector: provider_selector.to_string(),
     })
 }
 
@@ -882,22 +1001,24 @@ fn internal_error(err: AppError) -> (StatusCode, Json<ApiErrorResponse>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_timeout, parse_target, provider_is_dispatchable, wrap_task_for_main_agent,
+        claude_dispatch_permission_mode, dispatch_name_slug, normalize_timeout, parse_target,
+        preferred_dispatch_selector, provider_is_dispatchable, wrap_task_for_main_agent,
         ParsedTarget, MAIN_AGENT_CALLBACK_TAG,
     };
     use crate::app_config::AppType;
+    use crate::provider::Provider;
     use serde_json::json;
 
     #[test]
     fn parse_target_accepts_supported_apps() {
         let parsed = parse_target("claude:primary").expect("target should parse");
         assert_eq!(parsed.app, AppType::Claude);
-        assert_eq!(parsed.provider_id, "primary");
+        assert_eq!(parsed.provider_selector, "primary");
 
         let parsed = parse_target("codex:team").expect("target should parse");
         assert_eq!(parsed, ParsedTarget {
             app: AppType::Codex,
-            provider_id: "team".to_string(),
+            provider_selector: "team".to_string(),
         });
     }
 
@@ -929,6 +1050,20 @@ mod tests {
     }
 
     #[test]
+    fn claude_dispatch_defaults_to_bypass_permissions() {
+        assert_eq!(claude_dispatch_permission_mode(&json!({})), "bypassPermissions");
+    }
+
+    #[test]
+    fn claude_dispatch_honors_explicit_permission_mode() {
+        let settings = json!({
+            "dispatchPermissionMode": "dontAsk"
+        });
+
+        assert_eq!(claude_dispatch_permission_mode(&settings), "dontAsk");
+    }
+
+    #[test]
     fn wrapped_task_requires_main_agent_callback() {
         let wrapped = wrap_task_for_main_agent("Implement the feature.");
 
@@ -936,5 +1071,54 @@ mod tests {
         assert!(wrapped.contains(MAIN_AGENT_CALLBACK_TAG));
         assert!(wrapped.contains("message: 我已经实现完了"));
         assert!(wrapped.contains("Implement the feature."));
+    }
+
+    #[test]
+    fn dispatch_name_slug_is_short_and_stable() {
+        assert_eq!(dispatch_name_slug("DouBaoSeed"), "doubaoseed");
+        assert_eq!(dispatch_name_slug("Kimi For Coding"), "kimi-for-coding");
+        assert_eq!(dispatch_name_slug("Aliyun/CN"), "aliyun-cn");
+    }
+
+    #[test]
+    fn preferred_dispatch_selector_prefers_alias() {
+        let provider = Provider {
+            id: "abc".to_string(),
+            name: "DouBaoSeed".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+            alias: Some("db".to_string()),
+        };
+
+        assert_eq!(preferred_dispatch_selector(&provider), "db");
+    }
+
+    #[test]
+    fn preferred_dispatch_selector_falls_back_to_id_when_slug_is_empty() {
+        let provider = Provider {
+            id: "aliyun-provider".to_string(),
+            name: "////".to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+            alias: None,
+        };
+
+        assert_eq!(preferred_dispatch_selector(&provider), "aliyun-provider");
     }
 }

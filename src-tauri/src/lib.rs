@@ -1,3 +1,4 @@
+mod app_identity;
 mod app_config;
 mod app_store;
 mod auto_launch;
@@ -105,7 +106,8 @@ fn handle_deeplink_url(
     focus_main_window: bool,
     source: &str,
 ) -> bool {
-    if !url_str.starts_with("ccswitch://") {
+    let expected_prefix = format!("{}://", crate::app_identity::deeplink_scheme());
+    if !url_str.starts_with(&expected_prefix) {
         return false;
     }
 
@@ -647,7 +649,7 @@ pub fn run() {
                         log::debug!("  URL[{i}]: {}", redact_url_for_log(url_str));
 
                         if handle_deeplink_url(&app_handle, url_str, true, "on_open_url") {
-                            break; // Process only first ccswitch:// URL
+                            break; // Process only the first supported deep-link URL
                         }
                     }
                 }
@@ -1172,13 +1174,15 @@ pub fn run() {
                         tray::apply_tray_policy(app_handle, true);
                     }
                 }
-                // 处理通过自定义 URL 协议触发的打开事件（例如 ccswitch://...）
+                // 处理通过自定义 URL 协议触发的打开事件
                 RunEvent::Opened { urls } => {
                     if let Some(url) = urls.first() {
                         let url_str = url.to_string();
                         log::info!("RunEvent::Opened with URL: {url_str}");
 
-                        if url_str.starts_with("ccswitch://") {
+                        let expected_prefix =
+                            format!("{}://", crate::app_identity::deeplink_scheme());
+                        if url_str.starts_with(&expected_prefix) {
                             // 解析并广播深链接事件，复用与 single_instance 相同的逻辑
                             match crate::deeplink::parse_deeplink_url(&url_str) {
                                 Ok(request) => {

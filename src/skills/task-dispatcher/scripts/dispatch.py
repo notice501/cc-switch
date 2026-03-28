@@ -14,11 +14,12 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Union
 
-DISCOVERY_PATH = Path.home() / ".cc-switch" / "dispatch-api.json"
-HISTORY_PATH = Path.home() / ".cc-switch" / "dispatch-history.jsonl"
-STATUS_PATH = Path.home() / ".cc-switch" / "dispatch-status.json"
+APP_CONFIG_DIR = Path("__CCSWITCH_APP_CONFIG_DIR__")
+DISCOVERY_PATH = APP_CONFIG_DIR / "dispatch-api.json"
+HISTORY_PATH = APP_CONFIG_DIR / "dispatch-history.jsonl"
+STATUS_PATH = APP_CONFIG_DIR / "dispatch-status.json"
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_TIMEOUT_SECONDS = 900
 DEFAULT_LOG_LIMIT = 10
@@ -42,7 +43,7 @@ class DispatchError(RuntimeError):
 
 @dataclass
 class ProvidersCommand:
-    app: str | None
+    app: Optional[str]
 
 
 @dataclass
@@ -67,7 +68,7 @@ class RunCommand:
     task: str
 
 
-Command = ProvidersCommand | StatusCommand | LastCommand | LogsCommand | RunCommand
+Command = Union[ProvidersCommand, StatusCommand, LastCommand, LogsCommand, RunCommand]
 
 
 def parse_args() -> argparse.Namespace:
@@ -86,7 +87,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_raw_arguments(raw_arguments: str | None) -> str:
+def load_raw_arguments(raw_arguments: Optional[str]) -> str:
     raw = raw_arguments if raw_arguments is not None else sys.stdin.read()
     raw = raw.strip()
     if not raw:
@@ -100,7 +101,7 @@ def usage_lines() -> list[str]:
         "- /dispatch-task status",
         "- /dispatch-task last",
         "- /dispatch-task logs [count]",
-        "- /dispatch-task <app:provider_id> [timeout=<seconds>] -- <task text>",
+        "- /dispatch-task <app:provider> [timeout=<seconds>] -- <task text>",
     ]
 
 
@@ -203,13 +204,13 @@ def parse_command(raw: str) -> Command:
 
 
 def parse_target(target: str) -> tuple[str, str]:
-    app, separator, provider_id = target.partition(":")
+    app, separator, provider_selector = target.partition(":")
     app = app.strip().lower()
-    provider_id = provider_id.strip()
+    provider_selector = provider_selector.strip()
 
-    if separator != ":" or not provider_id:
+    if separator != ":" or not provider_selector:
         raise DispatchError(
-            "Target must use the form `claude:<provider_id>` or `codex:<provider_id>`."
+            "Target must use the form `claude:<provider>` or `codex:<provider>`."
         )
     if app not in SUPPORTED_APPS:
         raise DispatchError(
@@ -218,7 +219,7 @@ def parse_target(target: str) -> tuple[str, str]:
             )
         )
 
-    return app, provider_id
+    return app, provider_selector
 
 
 def load_discovery() -> dict[str, Any]:
@@ -253,7 +254,7 @@ def request_json(
     discovery: dict[str, Any],
     method: str,
     path: str,
-    payload: dict[str, Any] | None = None,
+    payload: Optional[dict[str, Any]] = None,
     timeout_seconds: int = 30,
 ) -> dict[str, Any]:
     base_url = str(discovery["baseUrl"]).rstrip("/")
@@ -304,11 +305,11 @@ def extract_api_error(body: str, fallback: str) -> str:
     return body.strip() or str(fallback)
 
 
-def load_status_snapshot() -> dict[str, Any] | None:
+def load_status_snapshot() -> Optional[dict[str, Any]]:
     return load_json_file(STATUS_PATH)
 
 
-def load_json_file(path: Path) -> dict[str, Any] | None:
+def load_json_file(path: Path) -> Optional[dict[str, Any]]:
     if not path.exists():
         return None
     try:
@@ -362,7 +363,7 @@ def format_timestamp(timestamp: Any) -> str:
     )
 
 
-def parse_callback_block(text: str) -> dict[str, str] | None:
+def parse_callback_block(text: str) -> Optional[dict[str, str]]:
     normalized = text.replace("\r\n", "\n")
     match = CALLBACK_BLOCK_RE.search(normalized)
     if not match:
@@ -380,7 +381,7 @@ def strip_callback_block(text: str) -> str:
     return CALLBACK_BLOCK_RE.sub("", normalized).strip()
 
 
-def render_providers(payload: dict[str, Any], app_filter: str | None) -> str:
+def render_providers(payload: dict[str, Any], app_filter: Optional[str]) -> str:
     providers = payload.get("providers")
     if not isinstance(providers, list):
         raise DispatchError("Dispatch service returned an invalid providers payload.")

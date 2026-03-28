@@ -3,6 +3,7 @@ import type { VisibleApps } from "@/types";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { writeLocalStorage } from "@/lib/storage";
 import { cn } from "@/lib/utils";
+import { appStorageKey } from "@/lib/appIdentity";
 
 interface AppSwitcherProps {
   activeApp: AppId;
@@ -12,7 +13,7 @@ interface AppSwitcherProps {
 }
 
 const ALL_APPS: AppId[] = ["claude", "codex", "gemini", "opencode", "openclaw"];
-const STORAGE_KEY = "cc-switch-last-app";
+const STORAGE_KEY = appStorageKey("last-app");
 
 export function AppSwitcher({
   activeApp,

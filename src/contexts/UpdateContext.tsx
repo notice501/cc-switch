@@ -13,6 +13,7 @@ import {
   removeLocalStorage,
   writeLocalStorage,
 } from "@/lib/storage";
+import { appStorageKey } from "@/lib/appIdentity";
 
 interface UpdateContextValue {
   // 更新状态
@@ -34,7 +35,7 @@ interface UpdateContextValue {
 const UpdateContext = createContext<UpdateContextValue | undefined>(undefined);
 
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
-  const DISMISSED_VERSION_KEY = "ccswitch:update:dismissedVersion";
+  const DISMISSED_VERSION_KEY = appStorageKey("update-dismissed-version");
   const LEGACY_DISMISSED_KEY = "dismissedUpdateVersion"; // 兼容旧键
 
   const [hasUpdate, setHasUpdate] = useState(false);

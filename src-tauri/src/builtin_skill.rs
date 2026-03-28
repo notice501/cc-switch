@@ -42,6 +42,8 @@ const STALE_DISPATCH_SKILL_FILES: &[&str] = &[
     "skill.toml",
 ];
 
+const APP_CONFIG_DIR_PLACEHOLDER: &str = "__CCSWITCH_APP_CONFIG_DIR__";
+
 pub fn ensure_dispatch_task_skill(db: &Arc<Database>) -> Result<InstalledSkill, AppError> {
     let installed_skills = db.get_all_installed_skills()?;
     if let Some(conflict) = installed_skills.values().find(|skill| {
@@ -86,6 +88,8 @@ pub fn ensure_dispatch_task_skill(db: &Arc<Database>) -> Result<InstalledSkill, 
 
 fn write_dispatch_skill_files(skill_dir: &Path) -> Result<(), AppError> {
     fs::create_dir_all(skill_dir).map_err(|err| AppError::io(skill_dir, err))?;
+    let app_config_dir =
+        crate::config::get_app_config_dir().to_string_lossy().replace('\\', "\\\\");
 
     for relative_path in STALE_DISPATCH_SKILL_FILES {
         let stale_path = skill_dir.join(relative_path);
@@ -100,18 +104,44 @@ fn write_dispatch_skill_files(skill_dir: &Path) -> Result<(), AppError> {
             fs::create_dir_all(parent).map_err(|err| AppError::io(parent, err))?;
         }
 
+        let rendered_contents = contents.replace(APP_CONFIG_DIR_PLACEHOLDER, &app_config_dir);
         let needs_write = match fs::read_to_string(&path) {
-            Ok(existing) => existing != *contents,
+            Ok(existing) => existing != rendered_contents,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
             Err(err) => return Err(AppError::io(&path, err)),
         };
 
         if needs_write {
-            fs::write(&path, contents).map_err(|err| AppError::io(&path, err))?;
+            fs::write(&path, rendered_contents).map_err(|err| AppError::io(&path, err))?;
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_skill_files_use_instance_config_dir() {
+        std::env::set_var("CC_SWITCH_TEST_HOME", "/tmp/ccswitch-skill-home");
+        std::env::set_var("CCSWITCH_APP_CONFIG_DIR_NAME", ".ccswitch-pro");
+
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        write_dispatch_skill_files(temp_dir.path()).expect("write dispatch skill");
+
+        let dispatch = std::fs::read_to_string(temp_dir.path().join("scripts/dispatch.py"))
+            .expect("read dispatch.py");
+        let statusline = std::fs::read_to_string(temp_dir.path().join("scripts/statusline.py"))
+            .expect("read statusline.py");
+
+        assert!(dispatch.contains("/tmp/ccswitch-skill-home/.ccswitch-pro"));
+        assert!(statusline.contains("/tmp/ccswitch-skill-home/.ccswitch-pro"));
+
+        std::env::remove_var("CC_SWITCH_TEST_HOME");
+        std::env::remove_var("CCSWITCH_APP_CONFIG_DIR_NAME");
+    }
 }
 
 fn ensure_dispatch_status_line() -> Result<(), AppError> {

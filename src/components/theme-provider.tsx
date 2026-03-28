@@ -7,6 +7,7 @@ import React, {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { readLocalStorage, writeLocalStorage } from "@/lib/storage";
+import { appStorageKey } from "@/lib/appIdentity";
 
 type Theme = "light" | "dark" | "system";
 
@@ -28,7 +29,7 @@ const ThemeProviderContext = createContext<ThemeContextValue | undefined>(
 export function ThemeProvider({
   children,
   defaultTheme = "system",
-  storageKey = "cc-switch-theme",
+  storageKey = appStorageKey("theme"),
 }: ThemeProviderProps) {
   const getInitialTheme = () => {
     if (typeof window === "undefined") {

@@ -47,6 +47,7 @@ import {
   writeLocalStorage,
   writeSessionStorage,
 } from "@/lib/storage";
+import { APP_DISPLAY_NAME, appStorageKey } from "@/lib/appIdentity";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
@@ -103,7 +104,7 @@ const DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 const CONTENT_TOP_OFFSET = DRAG_BAR_HEIGHT + HEADER_HEIGHT;
 
-const STORAGE_KEY = "cc-switch-last-app";
+const STORAGE_KEY = appStorageKey("last-app");
 const VALID_APPS: AppId[] = [
   "claude",
   "codex",
@@ -120,7 +121,8 @@ const getInitialApp = (): AppId => {
   return "claude";
 };
 
-const VIEW_STORAGE_KEY = "cc-switch-last-view";
+const VIEW_STORAGE_KEY = appStorageKey("last-view");
+const ENV_BANNER_DISMISSED_KEY = appStorageKey("env-banner-dismissed");
 const VALID_VIEWS: View[] = [
   "providers",
   "settings",
@@ -400,7 +402,7 @@ function App() {
 
         if (flatConflicts.length > 0) {
           setEnvConflicts(flatConflicts);
-          const dismissed = readSessionStorage("env_banner_dismissed");
+          const dismissed = readSessionStorage(ENV_BANNER_DISMISSED_KEY);
           if (!dismissed) {
             setShowEnvBanner(true);
           }
@@ -477,7 +479,7 @@ function App() {
             );
             return [...prev, ...newConflicts];
           });
-          const dismissed = readSessionStorage("env_banner_dismissed");
+          const dismissed = readSessionStorage(ENV_BANNER_DISMISSED_KEY);
           if (!dismissed) {
             setShowEnvBanner(true);
           }
@@ -850,7 +852,7 @@ function App() {
           conflicts={envConflicts}
           onDismiss={() => {
             setShowEnvBanner(false);
-            writeSessionStorage("env_banner_dismissed", "true");
+            writeSessionStorage(ENV_BANNER_DISMISSED_KEY, "true");
           }}
           onDeleted={async () => {
             try {
@@ -940,7 +942,7 @@ function App() {
                         : "text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300",
                     )}
                   >
-                    CC Switch
+                    {APP_DISPLAY_NAME}
                   </a>
                 </div>
                 <Button

@@ -91,7 +91,7 @@ pub fn get_app_config_dir() -> PathBuf {
         return custom;
     }
 
-    let default_dir = get_home_dir().join(".cc-switch");
+    let default_dir = get_home_dir().join(crate::app_identity::app_config_dir_name());
 
     // 兼容 v3.10.3：当用户环境存在 `HOME` 且与真实用户目录不同，
     // v3.10.3 可能在 `HOME/.cc-switch/` 下创建/使用了数据库。
@@ -99,19 +99,21 @@ pub fn get_app_config_dir() -> PathBuf {
     // 同时也避免新安装因为 `HOME` 被设置而写入非预期路径。
     #[cfg(windows)]
     {
-        let default_db = default_dir.join("cc-switch.db");
-        if !default_db.exists() {
-            if let Ok(home_env) = std::env::var("HOME") {
-                let trimmed = home_env.trim();
-                if !trimmed.is_empty() {
-                    let legacy_dir = PathBuf::from(trimmed).join(".cc-switch");
-                    if legacy_dir.join("cc-switch.db").exists() {
-                        log::info!(
-                            "Detected v3.10.3 legacy database at {}, using it instead of {}",
-                            legacy_dir.display(),
-                            default_dir.display()
-                        );
-                        return legacy_dir;
+        if crate::app_identity::uses_legacy_app_config_dir() {
+            let default_db = default_dir.join("cc-switch.db");
+            if !default_db.exists() {
+                if let Ok(home_env) = std::env::var("HOME") {
+                    let trimmed = home_env.trim();
+                    if !trimmed.is_empty() {
+                        let legacy_dir = PathBuf::from(trimmed).join(".cc-switch");
+                        if legacy_dir.join("cc-switch.db").exists() {
+                            log::info!(
+                                "Detected v3.10.3 legacy database at {}, using it instead of {}",
+                                legacy_dir.display(),
+                                default_dir.display()
+                            );
+                            return legacy_dir;
+                        }
                     }
                 }
             }
@@ -270,6 +272,19 @@ mod tests {
     fn derive_mcp_path_from_root_like_dir_returns_none() {
         let override_dir = PathBuf::from("/");
         assert!(derive_mcp_path_from_override(&override_dir).is_none());
+    }
+
+    #[test]
+    fn app_config_dir_respects_identity_override() {
+        std::env::set_var("CC_SWITCH_TEST_HOME", "/tmp/ccswitch-test-home");
+        std::env::set_var("CCSWITCH_APP_CONFIG_DIR_NAME", ".ccswitch-pro");
+
+        let dir = get_app_config_dir();
+
+        assert_eq!(dir, PathBuf::from("/tmp/ccswitch-test-home/.ccswitch-pro"));
+
+        std::env::remove_var("CCSWITCH_APP_CONFIG_DIR_NAME");
+        std::env::remove_var("CC_SWITCH_TEST_HOME");
     }
 }
 

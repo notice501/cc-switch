@@ -14,6 +14,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import { exit } from "@tauri-apps/plugin-process";
+import { appStorageKey, defaultAppConfigPath } from "@/lib/appIdentity";
 
 // 根据平台添加 body class，便于平台特定样式
 try {
@@ -40,7 +41,7 @@ interface ConfigLoadErrorPayload {
 async function handleConfigLoadError(
   payload: ConfigLoadErrorPayload | null,
 ): Promise<void> {
-  const path = payload?.path ?? "~/.cc-switch/config.json";
+  const path = payload?.path ?? defaultAppConfigPath();
   const detail = payload?.error ?? "Unknown error";
 
   await message(
@@ -120,7 +121,10 @@ function BootGate() {
   return (
     <RootErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider defaultTheme="system" storageKey="cc-switch-theme">
+        <ThemeProvider
+          defaultTheme="system"
+          storageKey={appStorageKey("theme")}
+        >
           <UpdateProvider>
             <App />
             <Toaster />

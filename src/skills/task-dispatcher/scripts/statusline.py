@@ -6,12 +6,12 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-STATUS_PATH = Path.home() / ".cc-switch" / "dispatch-status.json"
+STATUS_PATH = Path("__CCSWITCH_APP_CONFIG_DIR__") / "dispatch-status.json"
 
 
-def read_status() -> dict[str, Any] | None:
+def read_status() -> Optional[dict[str, Any]]:
     if not STATUS_PATH.exists():
         return None
     try:

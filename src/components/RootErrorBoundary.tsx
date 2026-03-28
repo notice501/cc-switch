@@ -3,6 +3,7 @@ import {
   removeLocalStorage,
   removeSessionStorage,
 } from "@/lib/storage";
+import { APP_DISPLAY_NAME, appStorageKey } from "@/lib/appIdentity";
 
 interface RootErrorBoundaryProps {
   children: React.ReactNode;
@@ -13,9 +14,9 @@ interface RootErrorBoundaryState {
 }
 
 const UI_STATE_KEYS = [
-  "cc-switch-last-app",
-  "cc-switch-last-view",
-  "cc-switch-theme",
+  appStorageKey("last-app"),
+  appStorageKey("last-view"),
+  appStorageKey("theme"),
 ];
 
 export class RootErrorBoundary extends React.Component<
@@ -42,7 +43,7 @@ export class RootErrorBoundary extends React.Component<
     for (const key of UI_STATE_KEYS) {
       removeLocalStorage(key);
     }
-    removeSessionStorage("env_banner_dismissed");
+    removeSessionStorage(appStorageKey("env-banner-dismissed"));
     this.handleReload();
   };
 
@@ -58,7 +59,9 @@ export class RootErrorBoundary extends React.Component<
       <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-6">
         <div className="w-full max-w-2xl rounded-2xl border border-border bg-card shadow-xl p-6 space-y-4">
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold">CCswitch Pro failed to render</h1>
+            <h1 className="text-xl font-semibold">
+              {APP_DISPLAY_NAME} failed to render
+            </h1>
             <p className="text-sm text-muted-foreground">
               The app hit a frontend error during startup. You can reset the
               saved UI state and reopen into the default providers page.

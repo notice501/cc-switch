@@ -22,7 +22,7 @@ pub fn init_app_config_dir(dir: PathBuf) {
 fn default_app_config_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".cc-switch")
+        .join(crate::app_identity::app_config_dir_name())
 }
 
 /// 获取应用配置目录（优先使用初始化时写入的值；不会 panic）
@@ -190,9 +190,11 @@ mod tests {
 
     #[test]
     fn test_crash_log_path() {
+        std::env::set_var("CCSWITCH_APP_CONFIG_DIR_NAME", ".ccswitch-pro");
         let path = get_crash_log_path();
         assert!(path.ends_with("crash.log"));
-        assert!(path.to_string_lossy().contains(".cc-switch"));
+        assert!(path.to_string_lossy().contains(".ccswitch-pro"));
+        std::env::remove_var("CCSWITCH_APP_CONFIG_DIR_NAME");
     }
 
     #[test]
