@@ -10,8 +10,7 @@ mod usage;
 
 // Re-export alias functions for use in commands
 pub use alias::{
-    ensure_shell_sourced, generate_aliases_script, get_aliases_file_path, refresh_aliases,
-    write_aliases_file,
+    generate_aliases_script, get_aliases_file_path, refresh_aliases, write_aliases_file,
 };
 
 use indexmap::IndexMap;
@@ -136,6 +135,27 @@ base_url = "http://localhost:8080"
             "should keep mcp_servers.* base_url"
         );
     }
+
+    #[test]
+    fn normalize_provider_alias_keeps_exact_suffix() {
+        let mut provider = Provider::with_id(
+            "claude-test".into(),
+            "Claude Test".into(),
+            json!({ "env": { "ANTHROPIC_AUTH_TOKEN": "token" } }),
+            None,
+        );
+        provider.alias = Some("mini".into());
+
+        ProviderService::normalize_provider_alias(&AppType::Claude, &mut provider);
+
+        assert_eq!(provider.alias.as_deref(), Some("mini"));
+    }
+
+    #[test]
+    fn claude_alias_must_not_include_reserved_prefix() {
+        assert!(ProviderService::has_reserved_claude_prefix("claude-mini"));
+        assert!(!ProviderService::has_reserved_claude_prefix("mini"));
+    }
 }
 
 impl ProviderService {
@@ -158,7 +178,6 @@ impl ProviderService {
             .alias
             .as_deref()
             .map(str::trim)
-            .map(|value| value.strip_prefix("claude-").unwrap_or(value))
             .filter(|value| !value.is_empty())
             .map(str::to_string);
     }
@@ -1222,6 +1241,14 @@ impl ProviderService {
             return Ok(());
         };
 
+        if Self::has_reserved_claude_prefix(alias) {
+            return Err(AppError::localized(
+                "provider.claude.alias.prefix_reserved",
+                "Shell alias 只需要填写 claude- 后面的部分，例如 mini；不要填写 claude- 前缀",
+                "Shell alias should only include the suffix after claude-, for example mini; do not include the claude- prefix",
+            ));
+        }
+
         if !Self::is_valid_claude_alias(alias) {
             return Err(AppError::localized(
                 "provider.claude.alias.invalid",
@@ -1253,6 +1280,10 @@ impl ProviderService {
         Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$")
             .map(|pattern| pattern.is_match(alias))
             .unwrap_or(false)
+    }
+
+    fn has_reserved_claude_prefix(alias: &str) -> bool {
+        alias.starts_with("claude-")
     }
 
     #[allow(dead_code)]

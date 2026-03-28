@@ -1363,8 +1363,7 @@ export function ProviderForm({
             name="alias"
             render={({ field }) => (
               (() => {
-                const normalizedAlias =
-                  field.value?.replace(/^claude-/, "") || "alias";
+                const aliasSuffix = field.value?.trim() || "alias";
 
                 return (
                   <FormItem>
@@ -1380,7 +1379,7 @@ export function ProviderForm({
                       </div>
                     </FormControl>
                     <p className="text-xs text-muted-foreground">
-                      仅支持小写字母、数字和连字符；可填 <code className="font-mono bg-muted px-1 rounded">mini</code> 或 <code className="font-mono bg-muted px-1 rounded">claude-mini</code>，实际命令都会生成为 <code className="font-mono bg-muted px-1 rounded">claude-{normalizedAlias}</code>。当前激活的供应商无需设置
+                      仅支持小写字母、数字和连字符；这里只填写 <code className="font-mono bg-muted px-1 rounded">claude-</code> 后面的部分，例如 <code className="font-mono bg-muted px-1 rounded">mini</code>，命令会生成为 <code className="font-mono bg-muted px-1 rounded">claude-{aliasSuffix}</code>。当前激活的供应商无需设置
                     </p>
                     <FormMessage />
                   </FormItem>

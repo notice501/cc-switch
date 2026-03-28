@@ -59,10 +59,24 @@ export const providerSchema = z.object({
   alias: z
     .string()
     .trim()
-    .refine(
-      (value) => value === "" || /^[a-z0-9]+(-[a-z0-9]+)*$/.test(value),
-      "Alias 只能包含小写字母、数字和连字符",
-    )
+    .superRefine((value, ctx) => {
+      if (value === "") return;
+
+      if (value.startsWith("claude-")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "这里只填写 claude- 后面的部分，例如 mini",
+        });
+        return;
+      }
+
+      if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Alias 只能包含小写字母、数字和连字符",
+        });
+      }
+    })
     .optional(),
 });
 
