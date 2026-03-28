@@ -1,9 +1,11 @@
 use chrono::Utc;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::app_config::{AppType, InstalledSkill, SkillApps};
+use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
 use crate::database::Database;
 use crate::error::AppError;
 use crate::services::skill::SkillService;
@@ -12,7 +14,7 @@ const DISPATCH_SKILL_ID: &str = "builtin:dispatch-task";
 const DISPATCH_SKILL_NAME: &str = "dispatch-task";
 const DISPATCH_SKILL_DIRECTORY: &str = "dispatch-task";
 const DISPATCH_SKILL_DESCRIPTION: &str =
-    "Run a subtask on a Claude or Codex provider configured in cc-switch and wait for the result in the current Claude Code session.";
+    "Run a subtask on a Claude or Codex provider configured in cc-switch, inspect dispatch status/history from Claude Code, and wait for the result in the current Claude Code session.";
 
 const DISPATCH_SKILL_FILES: &[(&str, &str)] = &[
     (
@@ -22,6 +24,10 @@ const DISPATCH_SKILL_FILES: &[(&str, &str)] = &[
     (
         "scripts/dispatch.py",
         include_str!("../../src/skills/task-dispatcher/scripts/dispatch.py"),
+    ),
+    (
+        "scripts/statusline.py",
+        include_str!("../../src/skills/task-dispatcher/scripts/statusline.py"),
     ),
 ];
 
@@ -73,6 +79,7 @@ pub fn ensure_dispatch_task_skill(db: &Arc<Database>) -> Result<InstalledSkill, 
     db.save_skill(&skill)?;
     SkillService::sync_to_app_dir(DISPATCH_SKILL_DIRECTORY, &AppType::Claude)
         .map_err(anyhow_to_app_error)?;
+    ensure_dispatch_status_line()?;
 
     Ok(skill)
 }
@@ -105,6 +112,50 @@ fn write_dispatch_skill_files(skill_dir: &Path) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn ensure_dispatch_status_line() -> Result<(), AppError> {
+    let settings_path = get_claude_settings_path();
+    let mut settings: Value = if settings_path.exists() {
+        read_json_file(&settings_path)?
+    } else {
+        json!({})
+    };
+
+    let Some(root) = settings.as_object_mut() else {
+        return Err(AppError::Message(format!(
+            "Claude settings root must be a JSON object: {}",
+            settings_path.display()
+        )));
+    };
+
+    let statusline_path = SkillService::get_app_skills_dir(&AppType::Claude)
+        .map_err(anyhow_to_app_error)?
+        .join(DISPATCH_SKILL_DIRECTORY)
+        .join("scripts")
+        .join("statusline.py");
+    let command = format!("python3 {}", shell_quote(statusline_path.as_os_str().to_string_lossy().as_ref()));
+
+    root.insert(
+        "statusLine".to_string(),
+        json!({
+            "type": "command",
+            "command": command,
+            "padding": 0,
+        }),
+    );
+
+    write_json_file(&settings_path, &settings)?;
+    Ok(())
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    let escaped = value.replace('\'', r"'\''");
+    format!("'{escaped}'")
 }
 
 fn anyhow_to_app_error(err: anyhow::Error) -> AppError {

@@ -12,13 +12,28 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 DISCOVERY_PATH = Path.home() / ".cc-switch" / "dispatch-api.json"
+HISTORY_PATH = Path.home() / ".cc-switch" / "dispatch-history.jsonl"
+STATUS_PATH = Path.home() / ".cc-switch" / "dispatch-status.json"
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_TIMEOUT_SECONDS = 900
+DEFAULT_LOG_LIMIT = 10
+MAX_LOG_LIMIT = 50
 SUPPORTED_APPS = ("claude", "codex")
+CALLBACK_TAG = "MAIN_AGENT_CALLBACK"
+CALLBACK_BLOCK_RE = re.compile(
+    rf"<<{CALLBACK_TAG}>>\s*"
+    r"status:\s*(?P<status>[^\n\r]+)\s*\n"
+    r"message:\s*(?P<message>[^\n\r]*)\s*\n"
+    r"summary:\s*(?P<summary>[^\n\r]*)\s*\n"
+    r"deliverable:\s*\n"
+    rf"(?P<deliverable>.*?)\n<</{CALLBACK_TAG}>>",
+    re.DOTALL,
+)
 
 
 class DispatchError(RuntimeError):
@@ -31,10 +46,28 @@ class ProvidersCommand:
 
 
 @dataclass
+class StatusCommand:
+    pass
+
+
+@dataclass
+class LastCommand:
+    pass
+
+
+@dataclass
+class LogsCommand:
+    limit: int
+
+
+@dataclass
 class RunCommand:
     target: str
     timeout_seconds: int
     task: str
+
+
+Command = ProvidersCommand | StatusCommand | LastCommand | LogsCommand | RunCommand
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,21 +90,31 @@ def load_raw_arguments(raw_arguments: str | None) -> str:
     raw = raw_arguments if raw_arguments is not None else sys.stdin.read()
     raw = raw.strip()
     if not raw:
-        raise DispatchError(
-            "Missing dispatch arguments.\n\n"
-            "Usage:\n"
-            "- /dispatch-task providers [app]\n"
-            "- /dispatch-task <app:provider_id> [timeout=<seconds>] -- <task text>"
-        )
+        raise DispatchError(usage_error("Missing dispatch arguments."))
     return raw
 
 
-def parse_command(raw: str) -> ProvidersCommand | RunCommand:
+def usage_lines() -> list[str]:
+    return [
+        "- /dispatch-task providers [app]",
+        "- /dispatch-task status",
+        "- /dispatch-task last",
+        "- /dispatch-task logs [count]",
+        "- /dispatch-task <app:provider_id> [timeout=<seconds>] -- <task text>",
+    ]
+
+
+def usage_error(message: str) -> str:
+    return "{}\n\nUsage:\n{}".format(message, "\n".join(usage_lines()))
+
+
+def parse_command(raw: str) -> Command:
     tokens = shlex.split(raw)
     if not tokens:
-        raise DispatchError("Missing dispatch arguments.")
+        raise DispatchError(usage_error("Missing dispatch arguments."))
 
-    if tokens[0] == "providers":
+    head = tokens[0].strip().lower()
+    if head == "providers":
         if len(tokens) > 2:
             raise DispatchError("`providers` accepts at most one optional app filter.")
         app = None
@@ -85,21 +128,41 @@ def parse_command(raw: str) -> ProvidersCommand | RunCommand:
                 )
         return ProvidersCommand(app=app)
 
+    if head == "status":
+        if len(tokens) != 1:
+            raise DispatchError("`status` does not accept extra arguments.")
+        return StatusCommand()
+
+    if head == "last":
+        if len(tokens) != 1:
+            raise DispatchError("`last` does not accept extra arguments.")
+        return LastCommand()
+
+    if head == "logs":
+        if len(tokens) > 2:
+            raise DispatchError("`logs` accepts at most one optional numeric count.")
+        limit = DEFAULT_LOG_LIMIT
+        if len(tokens) == 2:
+            try:
+                limit = int(tokens[1], 10)
+            except ValueError as exc:
+                raise DispatchError("`logs` count must be an integer.") from exc
+            if limit < 1 or limit > MAX_LOG_LIMIT:
+                raise DispatchError(
+                    "`logs` count must be between 1 and {}.".format(MAX_LOG_LIMIT)
+                )
+        return LogsCommand(limit=limit)
+
     match = re.match(r"(?s)^(?P<head>.+?)\s+--\s*(?P<task>.+)$", raw)
     if not match:
-        raise DispatchError(
-            "Missing `-- <task text>` separator.\n\n"
-            "Usage:\n"
-            "- /dispatch-task providers [app]\n"
-            "- /dispatch-task <app:provider_id> [timeout=<seconds>] -- <task text>"
-        )
+        raise DispatchError(usage_error("Missing `-- <task text>` separator."))
 
-    head = match.group("head").strip()
+    run_head = match.group("head").strip()
     task = match.group("task").strip()
     if not task:
         raise DispatchError("Task text cannot be empty.")
 
-    head_tokens = shlex.split(head)
+    head_tokens = shlex.split(run_head)
     if not head_tokens:
         raise DispatchError("Missing dispatch target.")
 
@@ -241,6 +304,46 @@ def extract_api_error(body: str, fallback: str) -> str:
     return body.strip() or str(fallback)
 
 
+def load_status_snapshot() -> dict[str, Any] | None:
+    return load_json_file(STATUS_PATH)
+
+
+def load_json_file(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DispatchError("Failed to read {}: {}".format(path, exc)) from exc
+    if not isinstance(payload, dict):
+        raise DispatchError("{} must contain a JSON object.".format(path))
+    return payload
+
+
+def load_history_entries(limit: int) -> list[dict[str, Any]]:
+    if not HISTORY_PATH.exists():
+        return []
+    try:
+        lines = HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise DispatchError("Failed to read {}: {}".format(HISTORY_PATH, exc)) from exc
+
+    entries: list[dict[str, Any]] = []
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            entries.append(payload)
+        if len(entries) >= limit:
+            break
+    return entries
+
+
 def format_duration(duration_ms: Any) -> str:
     if not isinstance(duration_ms, (int, float)):
         return "unknown"
@@ -251,20 +354,46 @@ def format_duration(duration_ms: Any) -> str:
     return "{:.2f}s".format(seconds)
 
 
+def format_timestamp(timestamp: Any) -> str:
+    if not isinstance(timestamp, (int, float)):
+        return "unknown"
+    return datetime.fromtimestamp(float(timestamp)).astimezone().strftime(
+        "%Y-%m-%d %H:%M:%S %Z"
+    )
+
+
+def parse_callback_block(text: str) -> dict[str, str] | None:
+    normalized = text.replace("\r\n", "\n")
+    match = CALLBACK_BLOCK_RE.search(normalized)
+    if not match:
+        return None
+    return {
+        "status": match.group("status").strip(),
+        "message": match.group("message").strip(),
+        "summary": match.group("summary").strip(),
+        "deliverable": match.group("deliverable").strip(),
+    }
+
+
+def strip_callback_block(text: str) -> str:
+    normalized = text.replace("\r\n", "\n")
+    return CALLBACK_BLOCK_RE.sub("", normalized).strip()
+
+
 def render_providers(payload: dict[str, Any], app_filter: str | None) -> str:
     providers = payload.get("providers")
     if not isinstance(providers, list):
         raise DispatchError("Dispatch service returned an invalid providers payload.")
 
-    title = "Available dispatch targets"
+    title = "## Dispatch Providers"
     if app_filter:
-        title += " ({})".format(app_filter)
+        title += " (`{}`)".format(app_filter)
 
     lines = [title, ""]
 
     if not providers:
         lines.append("- No dispatchable providers found in cc-switch.")
-        lines.append("- Supported apps in v1: claude, codex.")
+        lines.append("- Supported apps in v1: `claude`, `codex`.")
     else:
         for item in providers:
             if not isinstance(item, dict):
@@ -272,63 +401,157 @@ def render_providers(payload: dict[str, Any], app_filter: str | None) -> str:
             target = str(item.get("target") or "unknown")
             name = str(item.get("providerName") or item.get("providerId") or "unknown")
             suffix = " (current)" if item.get("current") else ""
-            lines.append("- {} - {}{}".format(target, name, suffix))
+            lines.append("- `{}` - {}{}".format(target, name, suffix))
 
-    lines.extend(
-        [
-            "",
-            "Usage:",
-            "- /dispatch-task providers [app]",
-            "- /dispatch-task <app:provider_id> [timeout=<seconds>] -- <task text>",
-        ]
-    )
+    lines.extend(["", "Usage:"] + usage_lines())
     return "\n".join(lines)
 
 
-def render_run(payload: dict[str, Any]) -> str:
-    ok = bool(payload.get("ok"))
-    timed_out = bool(payload.get("timedOut"))
-    status = str(payload.get("status") or "unknown")
-    target = str(payload.get("target") or "unknown")
-    provider_name = str(payload.get("providerName") or "unknown")
-    exit_code = payload.get("exitCode")
-    duration = format_duration(payload.get("durationMs"))
-    cwd = str(payload.get("cwd") or "")
-    result = str(payload.get("result") or "").strip()
-    stdout = str(payload.get("stdout") or "").strip()
-    stderr = str(payload.get("stderr") or "").strip()
+def render_status() -> str:
+    snapshot = load_status_snapshot()
+    history_entry = load_history_entries(1)
+    last_entry = history_entry[0] if history_entry else None
 
-    if ok:
-        title = "Dispatch succeeded"
-    elif timed_out:
-        title = "Dispatch timed out"
-    else:
-        title = "Dispatch failed"
+    lines = ["## Dispatch Status", ""]
+    if not snapshot and not last_entry:
+        lines.append("- State: `idle`")
+        lines.append("- No dispatch activity has been recorded yet.")
+        return "\n".join(lines)
 
-    lines = [
-        title,
-        "",
-        "- Target: {}".format(target),
-        "- Provider: {}".format(provider_name),
-        "- Status: {}".format(status),
-        "- Duration: {}".format(duration),
-        "- Exit code: {}".format(exit_code if exit_code is not None else "n/a"),
-        "- CWD: {}".format(cwd or "n/a"),
+    if snapshot:
+        state = str(snapshot.get("state") or "idle")
+        updated_at = snapshot.get("updatedAt")
+        lines.append("- State: `{}`".format(state))
+        if updated_at is not None:
+            lines.append("- Updated: `{}`".format(format_timestamp(updated_at)))
+
+        current_run = snapshot.get("currentRun")
+        if state == "running" and isinstance(current_run, dict):
+            lines.append("- Target: `{}`".format(current_run.get("target") or "unknown"))
+            lines.append("- Provider: `{}`".format(current_run.get("providerName") or "unknown"))
+            lines.append("- Started: `{}`".format(format_timestamp(current_run.get("startedAt"))))
+            lines.append("- Timeout: `{}` seconds".format(current_run.get("timeoutSeconds") or "unknown"))
+            lines.append("- CWD: `{}`".format(current_run.get("cwd") or "n/a"))
+
+        last_run = snapshot.get("lastRun")
+        if isinstance(last_run, dict):
+            lines.extend(render_compact_last_run(last_run))
+    elif last_entry:
+        lines.append("- State: `idle`")
+        lines.extend(render_compact_last_run(last_entry))
+
+    return "\n".join(lines)
+
+
+def render_compact_last_run(entry: dict[str, Any]) -> list[str]:
+    callback = parse_callback_block(str(entry.get("result") or ""))
+    callback_status = callback["status"] if callback else "missing"
+    return [
+        "- Last target: `{}`".format(entry.get("target") or "unknown"),
+        "- Last outcome: `{}`".format(entry.get("status") or "unknown"),
+        "- Last callback: `{}`".format(callback_status),
+        "- Last finished: `{}`".format(format_timestamp(entry.get("timestamp"))),
+        "- Last duration: `{}`".format(format_duration(entry.get("durationMs"))),
     ]
 
-    if result:
-        lines.extend(["", "Result", result])
 
-    if stderr and stderr != result:
-        lines.extend(["", "stderr", stderr])
-    elif stdout and stdout != result and not ok:
-        lines.extend(["", "stdout", stdout])
+def render_last() -> str:
+    entries = load_history_entries(1)
+    if not entries:
+        return "## Dispatch Last Run\n\n- No dispatch history is available yet."
+    return render_record("Dispatch Last Run", entries[0])
+
+
+def render_logs(limit: int) -> str:
+    entries = load_history_entries(limit)
+    lines = ["## Dispatch Logs", "", "- Showing the newest `{}` entr{}.".format(limit, "y" if limit == 1 else "ies")]
+
+    if not entries:
+        lines.append("- No dispatch history is available yet.")
+        return "\n".join(lines)
+
+    for entry in entries:
+        callback = parse_callback_block(str(entry.get("result") or ""))
+        callback_status = callback["status"] if callback else "missing"
+        lines.append(
+            "- `{}` | `{}` | `{}` | `{}` | callback=`{}` | exit=`{}`".format(
+                format_timestamp(entry.get("timestamp")),
+                entry.get("status") or "unknown",
+                entry.get("target") or "unknown",
+                format_duration(entry.get("durationMs")),
+                callback_status,
+                entry.get("exitCode") if entry.get("exitCode") is not None else "n/a",
+            )
+        )
+        preview = str(entry.get("resultPreview") or "").strip()
+        if preview:
+            lines.append("  preview: {}".format(preview.replace("\n", " ")))
 
     return "\n".join(lines)
+
+
+def render_record(title: str, record: dict[str, Any]) -> str:
+    timed_out = bool(record.get("timedOut"))
+    status = str(record.get("status") or "unknown")
+    target = str(record.get("target") or "unknown")
+    provider_name = str(record.get("providerName") or "unknown")
+    exit_code = record.get("exitCode")
+    duration = format_duration(record.get("durationMs"))
+    cwd = str(record.get("cwd") or "")
+    result = str(record.get("result") or "").strip()
+    stdout = str(record.get("stdout") or "").strip()
+    stderr = str(record.get("stderr") or "").strip()
+    callback = parse_callback_block(result)
+
+    outcome = status
+    if timed_out:
+        outcome = "timed_out"
+
+    lines = [
+        "## {}".format(title),
+        "",
+        "- Outcome: `{}`".format(outcome),
+        "- Target: `{}`".format(target),
+        "- Provider: `{}`".format(provider_name),
+        "- Duration: `{}`".format(duration),
+        "- Exit code: `{}`".format(exit_code if exit_code is not None else "n/a"),
+        "- Callback: `{}`".format(callback["status"] if callback else "missing"),
+    ]
+
+    timestamp = record.get("timestamp")
+    if timestamp is not None:
+        lines.append("- Finished: `{}`".format(format_timestamp(timestamp)))
+    if cwd:
+        lines.append("- CWD: `{}`".format(cwd))
+
+    lines.extend(["", "### Main Agent Callback"])
+    if callback:
+        lines.append("- Message: {}".format(callback["message"] or "_empty_"))
+        lines.append("- Summary: {}".format(callback["summary"] or "_empty_"))
+        lines.extend(["", "### Deliverable", callback["deliverable"] or "_Empty deliverable._"])
+
+        remainder = strip_callback_block(result)
+        if remainder:
+            lines.extend(["", "### Child Notes", remainder])
+    else:
+        lines.append("- Callback block was not found in the child result.")
+        body = result or stdout or stderr or "No result captured."
+        lines.extend(["", "### Child Result", body])
+
+    if stderr and stderr != result:
+        lines.extend(["", "### stderr", fenced_block(stderr)])
+    elif stdout and stdout != result and not bool(record.get("ok")):
+        lines.extend(["", "### stdout", fenced_block(stdout)])
+
+    return "\n".join(lines)
+
+
+def fenced_block(text: str) -> str:
+    return "```text\n{}\n```".format(text)
 
 
 def render_failure(message: str) -> str:
-    return "Dispatch request could not be completed.\n\n- Error: {}".format(message.strip())
+    return "## Dispatch Error\n\n- Error: {}".format(message.strip())
 
 
 def main() -> int:
@@ -337,6 +560,19 @@ def main() -> int:
     try:
         raw_arguments = load_raw_arguments(arguments.raw_arguments)
         command = parse_command(raw_arguments)
+
+        if isinstance(command, StatusCommand):
+            print(render_status())
+            return 0
+
+        if isinstance(command, LastCommand):
+            print(render_last())
+            return 0
+
+        if isinstance(command, LogsCommand):
+            print(render_logs(command.limit))
+            return 0
+
         discovery = load_discovery()
 
         if isinstance(command, ProvidersCommand):
@@ -359,7 +595,7 @@ def main() -> int:
             },
             timeout_seconds=max(command.timeout_seconds + 15, 30),
         )
-        print(render_run(payload))
+        print(render_record("Dispatch Result", payload))
         return 0
     except DispatchError as exc:
         print(render_failure(str(exc)))

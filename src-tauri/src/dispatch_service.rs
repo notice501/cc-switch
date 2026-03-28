@@ -27,6 +27,7 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
 const MAX_TIMEOUT_SECONDS: u64 = 900;
 const HISTORY_FILE_NAME: &str = "dispatch-history.jsonl";
 const DISCOVERY_FILE_NAME: &str = "dispatch-api.json";
+const STATUS_FILE_NAME: &str = "dispatch-status.json";
 const MAIN_AGENT_CALLBACK_TAG: &str = "MAIN_AGENT_CALLBACK";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,7 +98,7 @@ struct DispatchRunResponse {
     stderr: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DispatchHistoryEntry {
     timestamp: i64,
@@ -105,13 +106,49 @@ struct DispatchHistoryEntry {
     provider_name: String,
     cwd: String,
     timeout_seconds: u64,
-    status: &'static str,
+    status: String,
     timed_out: bool,
     exit_code: Option<i32>,
     duration_ms: u128,
     result_preview: String,
+    #[serde(default)]
+    result: String,
     stdout: String,
     stderr: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DispatchStatusSnapshot {
+    state: String,
+    updated_at: i64,
+    current_run: Option<DispatchActiveRun>,
+    last_run: Option<DispatchStatusRun>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DispatchActiveRun {
+    started_at: i64,
+    target: String,
+    provider_name: String,
+    cwd: String,
+    timeout_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DispatchStatusRun {
+    timestamp: i64,
+    target: String,
+    provider_name: String,
+    cwd: String,
+    timeout_seconds: u64,
+    status: String,
+    timed_out: bool,
+    exit_code: Option<i32>,
+    duration_ms: u128,
+    result_preview: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +191,7 @@ pub fn start(db: Arc<Database>) -> Result<DispatchDiscovery, AppError> {
         updated_at: Utc::now().timestamp(),
     };
     write_discovery(&discovery)?;
+    initialize_status_snapshot();
 
     let router = Router::new()
         .route("/health", get(health_check))
@@ -240,6 +278,19 @@ async fn run_dispatch(
         _ => return Err(bad_request("Only Claude and Codex targets are supported")),
     };
 
+    write_status_snapshot(DispatchStatusSnapshot {
+        state: "running".to_string(),
+        updated_at: Utc::now().timestamp(),
+        current_run: Some(DispatchActiveRun {
+            started_at: Utc::now().timestamp(),
+            target: request.target.clone(),
+            provider_name: provider_name.clone(),
+            cwd: cwd.display().to_string(),
+            timeout_seconds,
+        }),
+        last_run: load_last_history_summary(),
+    });
+
     let run_result = runner
         .run(&provider, &cwd, request.task.trim(), timeout_seconds)
         .await;
@@ -257,38 +308,44 @@ async fn run_dispatch(
                 stdout: String::new(),
                 stderr: error_message.clone(),
             };
-            append_history(DispatchHistoryEntry {
+            let history_entry = DispatchHistoryEntry {
                 timestamp: Utc::now().timestamp(),
                 target: request.target.clone(),
                 provider_name,
                 cwd: cwd.display().to_string(),
                 timeout_seconds,
-                status: failure.status,
+                status: failure.status.to_string(),
                 timed_out: failure.timed_out,
                 exit_code: failure.exit_code,
                 duration_ms: failure.duration_ms,
                 result_preview: truncate_preview(&failure.result),
+                result: failure.result.clone(),
                 stdout: failure.stdout.clone(),
                 stderr: failure.stderr.clone(),
-            });
+            };
+            append_history(history_entry.clone());
+            write_status_snapshot(finished_status_snapshot(&history_entry));
             return Err(internal_error(err));
         }
     };
 
-    append_history(DispatchHistoryEntry {
+    let history_entry = DispatchHistoryEntry {
         timestamp: Utc::now().timestamp(),
         target: request.target.clone(),
         provider_name: provider.name.clone(),
         cwd: cwd.display().to_string(),
         timeout_seconds,
-        status: output.status,
+        status: output.status.to_string(),
         timed_out: output.timed_out,
         exit_code: output.exit_code,
         duration_ms: output.duration_ms,
         result_preview: truncate_preview(&output.result),
+        result: output.result.clone(),
         stdout: output.stdout.clone(),
         stderr: output.stderr.clone(),
-    });
+    };
+    append_history(history_entry.clone());
+    write_status_snapshot(finished_status_snapshot(&history_entry));
 
     Ok(Json(DispatchRunResponse {
         ok: output.status == "succeeded",
@@ -710,12 +767,81 @@ fn append_history(entry: DispatchHistoryEntry) {
     }
 }
 
+fn status_path() -> PathBuf {
+    get_app_config_dir().join(STATUS_FILE_NAME)
+}
+
+fn write_status_snapshot(snapshot: DispatchStatusSnapshot) {
+    let path = status_path();
+    let payload = match serde_json::to_vec_pretty(&snapshot) {
+        Ok(payload) => payload,
+        Err(err) => {
+            log::warn!("Failed to serialize dispatch status snapshot: {err}");
+            return;
+        }
+    };
+
+    if let Some(parent) = path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            log::warn!("Failed to create dispatch status directory: {err}");
+            return;
+        }
+    }
+
+    if let Err(err) = fs::write(&path, payload) {
+        log::warn!("Failed to write dispatch status snapshot: {err}");
+    }
+}
+
+fn initialize_status_snapshot() {
+    write_status_snapshot(DispatchStatusSnapshot {
+        state: "idle".to_string(),
+        updated_at: Utc::now().timestamp(),
+        current_run: None,
+        last_run: load_last_history_summary(),
+    });
+}
+
+fn load_last_history_summary() -> Option<DispatchStatusRun> {
+    let path = get_app_config_dir().join(HISTORY_FILE_NAME);
+    let raw = fs::read_to_string(path).ok()?;
+    let line = raw.lines().rev().find(|line| !line.trim().is_empty())?;
+    let entry: DispatchHistoryEntry = serde_json::from_str(line).ok()?;
+    Some(DispatchStatusRun::from(entry))
+}
+
+fn finished_status_snapshot(entry: &DispatchHistoryEntry) -> DispatchStatusSnapshot {
+    DispatchStatusSnapshot {
+        state: "idle".to_string(),
+        updated_at: Utc::now().timestamp(),
+        current_run: None,
+        last_run: Some(DispatchStatusRun::from(entry.clone())),
+    }
+}
+
 fn truncate_preview(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= 240 {
         return trimmed.to_string();
     }
     trimmed.chars().take(240).collect::<String>() + "..."
+}
+
+impl From<DispatchHistoryEntry> for DispatchStatusRun {
+    fn from(entry: DispatchHistoryEntry) -> Self {
+        Self {
+            timestamp: entry.timestamp,
+            target: entry.target,
+            provider_name: entry.provider_name,
+            cwd: entry.cwd,
+            timeout_seconds: entry.timeout_seconds,
+            status: entry.status.to_string(),
+            timed_out: entry.timed_out,
+            exit_code: entry.exit_code,
+            duration_ms: entry.duration_ms,
+            result_preview: entry.result_preview,
+        }
+    }
 }
 
 fn map_spawn_error(err: std::io::Error) -> AppError {
