@@ -296,6 +296,22 @@ fn schema_migration_v4_adds_pricing_model_columns() {
     let conn = Connection::open_in_memory().expect("open memory db");
     conn.execute_batch(
         r#"
+        CREATE TABLE providers (
+            id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            settings_config TEXT NOT NULL,
+            website_url TEXT,
+            category TEXT,
+            created_at INTEGER,
+            sort_index INTEGER,
+            notes TEXT,
+            icon TEXT,
+            icon_color TEXT,
+            meta TEXT NOT NULL DEFAULT '{}',
+            is_current BOOLEAN NOT NULL DEFAULT 0,
+            PRIMARY KEY (id, app_type)
+        );
         CREATE TABLE proxy_config (app_type TEXT PRIMARY KEY);
         CREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY, model TEXT NOT NULL);
         CREATE TABLE mcp_servers (
@@ -566,6 +582,7 @@ fn dry_run_validates_schema_compatibility() {
             icon: None,
             icon_color: None,
             in_failover_queue: false,
+            alias: None,
         },
     );
 
