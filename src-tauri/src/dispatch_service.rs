@@ -27,6 +27,7 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
 const MAX_TIMEOUT_SECONDS: u64 = 900;
 const HISTORY_FILE_NAME: &str = "dispatch-history.jsonl";
 const DISCOVERY_FILE_NAME: &str = "dispatch-api.json";
+const MAIN_AGENT_CALLBACK_TAG: &str = "MAIN_AGENT_CALLBACK";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -326,6 +327,7 @@ async fn run_claude(
     timeout_seconds: u64,
 ) -> Result<RunnerOutput, AppError> {
     let envs = extract_claude_env(&provider.settings_config)?;
+    let wrapped_task = wrap_task_for_main_agent(task);
 
     let mut command = Command::new("claude");
     command
@@ -338,7 +340,7 @@ async fn run_claude(
         .arg("--add-dir")
         .arg(cwd)
         .arg("--")
-        .arg(task)
+        .arg(&wrapped_task)
         .kill_on_drop(true);
 
     for key in [
@@ -364,6 +366,7 @@ async fn run_codex(
     task: &str,
     timeout_seconds: u64,
 ) -> Result<RunnerOutput, AppError> {
+    let wrapped_task = wrap_task_for_main_agent(task);
     let temp_home = TempDir::new()
         .map_err(|e| AppError::Message(format!("创建 Codex 临时目录失败: {e}")))?;
     let codex_dir = temp_home.path().join(".codex");
@@ -404,7 +407,7 @@ async fn run_codex(
         .arg(cwd)
         .arg("-o")
         .arg(&last_message_path)
-        .arg(task)
+        .arg(&wrapped_task)
         .kill_on_drop(true)
         .env("HOME", temp_home.path())
         .env("CODEX_HOME", &codex_dir)
@@ -550,13 +553,7 @@ fn collect_dispatch_providers(
 fn provider_is_dispatchable(app: &AppType, settings: &Value) -> bool {
     match app {
         AppType::Claude => extract_claude_env(settings).is_ok(),
-        AppType::Codex => settings
-            .get("auth")
-            .and_then(Value::as_object)
-            .and_then(|auth| auth.get("OPENAI_API_KEY"))
-            .and_then(Value::as_str)
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
+        AppType::Codex => settings.get("auth").and_then(Value::as_object).is_some()
             && settings
                 .get("config")
                 .and_then(Value::as_str)
@@ -564,6 +561,34 @@ fn provider_is_dispatchable(app: &AppType, settings: &Value) -> bool {
                 .unwrap_or(false),
         _ => false,
     }
+}
+
+fn wrap_task_for_main_agent(task: &str) -> String {
+    format!(
+        r#"You are a dispatched sub-agent working for a main agent.
+
+Complete the assigned subtask below. When you finish, you MUST explicitly callback to the main agent and tell it that you have finished.
+
+Requirements for your final response:
+1. Do the requested work first.
+2. End with a callback block using this exact structure.
+3. If you completed the task, use `status: completed` and `message: 我已经实现完了`.
+4. If you are blocked or could not finish, use `status: blocked` and explain the blocker.
+
+Required callback block:
+<<{tag}>>
+status: completed|blocked
+message: 我已经实现完了
+summary: <one-sentence summary for the main agent>
+deliverable:
+<the concrete result or handoff for the main agent>
+<</{tag}>>
+
+Assigned subtask:
+{task}"#,
+        tag = MAIN_AGENT_CALLBACK_TAG,
+        task = task.trim()
+    )
 }
 
 fn load_effective_provider(db: &Arc<Database>, target: &ParsedTarget) -> Result<Provider, AppError> {
@@ -730,8 +755,12 @@ fn internal_error(err: AppError) -> (StatusCode, Json<ApiErrorResponse>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_timeout, parse_target, ParsedTarget};
+    use super::{
+        normalize_timeout, parse_target, provider_is_dispatchable, wrap_task_for_main_agent,
+        ParsedTarget, MAIN_AGENT_CALLBACK_TAG,
+    };
     use crate::app_config::AppType;
+    use serde_json::json;
 
     #[test]
     fn parse_target_accepts_supported_apps() {
@@ -758,5 +787,28 @@ mod tests {
         assert_eq!(normalize_timeout(None), 120);
         assert_eq!(normalize_timeout(Some(0)), 1);
         assert_eq!(normalize_timeout(Some(9_999)), 900);
+    }
+
+    #[test]
+    fn codex_provider_is_dispatchable_with_chatgpt_auth() {
+        let settings = json!({
+            "auth": {
+                "OPENAI_API_KEY": null,
+                "auth_mode": "chatgpt"
+            },
+            "config": "model = \"gpt-5.4\""
+        });
+
+        assert!(provider_is_dispatchable(&AppType::Codex, &settings));
+    }
+
+    #[test]
+    fn wrapped_task_requires_main_agent_callback() {
+        let wrapped = wrap_task_for_main_agent("Implement the feature.");
+
+        assert!(wrapped.contains("main agent"));
+        assert!(wrapped.contains(MAIN_AGENT_CALLBACK_TAG));
+        assert!(wrapped.contains("message: 我已经实现完了"));
+        assert!(wrapped.contains("Implement the feature."));
     }
 }

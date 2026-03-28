@@ -1,6 +1,6 @@
 ---
 name: dispatch-task
-description: Dispatch a subtask to a Claude or Codex provider configured in cc-switch and wait for the result to come back to the current Claude Code session. Use for `/dispatch-task providers [app]` or `/dispatch-task <claude|codex:provider_id> [timeout=<seconds>] -- <task text>`.
+description: Dispatch a subtask to a Claude or Codex provider configured in cc-switch, wait for the result to come back to the current Claude Code session, and require the child agent to callback to the main agent when finished. Use for `/dispatch-task providers [app]` or `/dispatch-task <claude|codex:provider_id> [timeout=<seconds>] -- <task text>`.
 disable-model-invocation: true
 user-invocable: true
 context: fork
