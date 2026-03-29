@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::app_config::{AppType, InstalledSkill, SkillApps};
-use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
+use crate::config::{get_app_config_dir, get_claude_settings_path, read_json_file, write_json_file};
 use crate::database::Database;
 use crate::error::AppError;
 use crate::services::skill::SkillService;
@@ -173,7 +173,45 @@ mod tests {
 }
 
 fn ensure_dispatch_status_line() -> Result<(), AppError> {
-    let settings_path = get_claude_settings_path();
+    let statusline_path = SkillService::get_app_skills_dir(&AppType::Claude)
+        .map_err(anyhow_to_app_error)?
+        .join(DISPATCH_SKILL_DIRECTORY)
+        .join("scripts")
+        .join("statusline.py");
+    let command = format!(
+        "python3 {}",
+        shell_quote(statusline_path.as_os_str().to_string_lossy().as_ref())
+    );
+
+    for settings_path in collect_claude_settings_paths()? {
+        ensure_dispatch_status_line_at(&settings_path, &command)?;
+    }
+
+    Ok(())
+}
+
+fn collect_claude_settings_paths() -> Result<Vec<std::path::PathBuf>, AppError> {
+    let mut paths = vec![get_claude_settings_path()];
+    let alias_homes_dir = get_app_config_dir().join("alias-homes");
+
+    if alias_homes_dir.exists() {
+        let entries = fs::read_dir(&alias_homes_dir).map_err(|err| AppError::io(&alias_homes_dir, err))?;
+        for entry in entries.flatten() {
+            let alias_claude_dir = entry.path().join(".claude");
+            if !alias_claude_dir.exists() {
+                continue;
+            }
+            let settings_path = alias_claude_dir.join("settings.json");
+            if !paths.iter().any(|existing| existing == &settings_path) {
+                paths.push(settings_path);
+            }
+        }
+    }
+
+    Ok(paths)
+}
+
+fn ensure_dispatch_status_line_at(settings_path: &Path, command: &str) -> Result<(), AppError> {
     let mut settings: Value = if settings_path.exists() {
         read_json_file(&settings_path)?
     } else {
@@ -186,13 +224,6 @@ fn ensure_dispatch_status_line() -> Result<(), AppError> {
             settings_path.display()
         )));
     };
-
-    let statusline_path = SkillService::get_app_skills_dir(&AppType::Claude)
-        .map_err(anyhow_to_app_error)?
-        .join(DISPATCH_SKILL_DIRECTORY)
-        .join("scripts")
-        .join("statusline.py");
-    let command = format!("python3 {}", shell_quote(statusline_path.as_os_str().to_string_lossy().as_ref()));
 
     root.insert(
         "statusLine".to_string(),
