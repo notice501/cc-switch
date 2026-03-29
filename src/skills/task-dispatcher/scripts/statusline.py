@@ -52,6 +52,17 @@ def main() -> int:
 
     state = str(snapshot.get("state") or "idle")
     if state == "running":
+        running_runs = snapshot.get("runningRuns")
+        if isinstance(running_runs, list) and running_runs:
+            current = running_runs[0] if isinstance(running_runs[0], dict) else None
+            if isinstance(current, dict):
+                target = str(current.get("target") or "unknown")
+                elapsed = short_duration_from_seconds(current.get("startedAt"))
+                extra = ""
+                if len(running_runs) > 1:
+                    extra = " +{}".format(len(running_runs) - 1)
+                print("dispatch: running {}{} {}".format(target, extra, elapsed))
+                return 0
         current = snapshot.get("currentRun")
         if isinstance(current, dict):
             target = str(current.get("target") or "unknown")
@@ -70,6 +81,8 @@ def main() -> int:
             prefix = "ok"
         elif status == "timed_out":
             prefix = "timeout"
+        elif status == "cancelled" or bool(last_run.get("cancelled")):
+            prefix = "cancel"
         else:
             prefix = "fail"
         print("dispatch: {} {} {}".format(prefix, target, duration))

@@ -12,6 +12,7 @@ use crate::error::AppError;
 use crate::provider::Provider;
 use crate::services::provider::sanitize_claude_settings_for_live;
 use indexmap::IndexMap;
+use serde_json::Value;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -61,7 +62,29 @@ fn shell_quote(s: &str) -> String {
 struct AliasCommand {
     command_name: String,
     home_dir: PathBuf,
+    permission_mode: String,
     settings_json: String,
+}
+
+fn sanitize_claude_settings_for_alias(settings: &serde_json::Value) -> serde_json::Value {
+    let mut sanitized = sanitize_claude_settings_for_live(settings);
+
+    if let Some(object) = sanitized.as_object_mut() {
+        object.remove("model");
+
+        if let Some(env) = object.get_mut("env").and_then(Value::as_object_mut) {
+            for key in [
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            ] {
+                env.remove(key);
+            }
+        }
+    }
+
+    sanitized
 }
 
 fn collect_alias_commands(
@@ -79,7 +102,7 @@ fn collect_alias_commands(
             _ => continue,
         };
 
-        let settings = sanitize_claude_settings_for_live(&provider.settings_config);
+        let settings = sanitize_claude_settings_for_alias(&provider.settings_config);
         let has_env = settings
             .get("env")
             .and_then(|value| value.as_object())
@@ -95,10 +118,28 @@ fn collect_alias_commands(
         commands.push(AliasCommand {
             command_name: format!("claude-{alias_name}"),
             home_dir: get_alias_home_dir(&alias_name),
+            permission_mode: alias_permission_mode(&provider.settings_config).to_string(),
             settings_json,
         });
     }
     commands
+}
+
+fn alias_permission_mode(settings: &Value) -> &'static str {
+    match settings
+        .get("dispatchPermissionMode")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some("acceptEdits") => "acceptEdits",
+        Some("default") => "default",
+        Some("dontAsk") => "dontAsk",
+        Some("plan") => "plan",
+        Some("auto") => "auto",
+        Some("bypassPermissions") => "bypassPermissions",
+        _ => "bypassPermissions",
+    }
 }
 
 fn generate_launcher_script(command: &AliasCommand) -> String {
@@ -113,7 +154,15 @@ fn generate_launcher_script(command: &AliasCommand) -> String {
         "export HOME={}",
         shell_quote(command.home_dir.to_string_lossy().as_ref())
     ));
-    lines.push(r#"exec claude "$@""#.to_string());
+    lines.push("for arg in \"$@\"; do".to_string());
+    lines.push("  if [ \"$arg\" = \"--permission-mode\" ]; then".to_string());
+    lines.push("    exec claude \"$@\"".to_string());
+    lines.push("  fi".to_string());
+    lines.push("done".to_string());
+    lines.push(format!(
+        "exec claude --permission-mode {} \"$@\"",
+        shell_quote(&command.permission_mode)
+    ));
     lines.push(String::new());
     lines.join("\n")
 }
@@ -322,6 +371,65 @@ fn create_symlink(src: &Path, dst: &Path) -> Result<(), AppError> {
     std::os::unix::fs::symlink(src, dst).map_err(|e| AppError::io(dst, e))
 }
 
+fn should_isolate_alias_entry(name: &str) -> bool {
+    matches!(
+        name,
+        "debug"
+            | "file-history"
+            | "history.jsonl"
+            | "paste-cache"
+            | "projects"
+            | "session-env"
+            | "sessions"
+            | "shell-snapshots"
+            | "stats-cache.json"
+            | "tasks"
+            | "todos"
+    )
+}
+
+fn remove_path_if_present(path: &Path) -> Result<(), AppError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(AppError::io(path, err)),
+    };
+
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || file_type.is_file() {
+        fs::remove_file(path).map_err(|e| AppError::io(path, e))?;
+    } else if file_type.is_dir() {
+        fs::remove_dir_all(path).map_err(|e| AppError::io(path, e))?;
+    }
+
+    Ok(())
+}
+
+fn ensure_isolated_alias_entry(source: &Path, target: &Path) -> Result<(), AppError> {
+    let source_metadata = fs::metadata(source).map_err(|e| AppError::io(source, e))?;
+
+    let needs_reset = match fs::symlink_metadata(target) {
+        Ok(metadata) => metadata.file_type().is_symlink(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(AppError::io(target, err)),
+    };
+
+    if needs_reset {
+        remove_path_if_present(target)?;
+    }
+
+    if source_metadata.is_dir() {
+        fs::create_dir_all(target).map_err(|e| AppError::io(target, e))?;
+        return Ok(());
+    }
+
+    if !target.exists() {
+        fs::write(target, b"").map_err(|e| AppError::io(target, e))?;
+    }
+
+    Ok(())
+}
+
 fn mirror_claude_home(alias_name: &str) -> Result<(), AppError> {
     let source_dir = real_claude_dir()?;
     let target_dir = get_alias_claude_dir(alias_name);
@@ -344,6 +452,11 @@ fn mirror_claude_home(alias_name: &str) -> Result<(), AppError> {
         }
 
         let target = target_dir.join(&file_name);
+        if should_isolate_alias_entry(file_name_str) {
+            ensure_isolated_alias_entry(&entry.path(), &target)?;
+            continue;
+        }
+
         if target.exists() {
             continue;
         }

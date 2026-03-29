@@ -270,6 +270,44 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dispatch_runs (
+                run_id TEXT PRIMARY KEY,
+                target TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                host_app TEXT NOT NULL DEFAULT 'claude',
+                cwd TEXT NOT NULL,
+                task_preview TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                timeout_seconds INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                exit_code INTEGER,
+                duration_ms INTEGER,
+                timed_out INTEGER NOT NULL DEFAULT 0,
+                cancelled INTEGER NOT NULL DEFAULT 0,
+                result_preview TEXT NOT NULL DEFAULT '',
+                result TEXT NOT NULL DEFAULT '',
+                stdout TEXT NOT NULL DEFAULT '',
+                stderr TEXT NOT NULL DEFAULT ''
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dispatch_runs_status_started_at
+             ON dispatch_runs(status, started_at DESC)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dispatch_runs_updated_at
+             ON dispatch_runs(updated_at DESC)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
         // 尝试添加 live_takeover_active 列到 proxy_config 表
         let _ = conn.execute(
             "ALTER TABLE proxy_config ADD COLUMN live_takeover_active INTEGER NOT NULL DEFAULT 0",
@@ -396,6 +434,11 @@ impl Database {
                         log::info!("迁移数据库从 v5 到 v6（使用量聚合表 + Copilot 模板类型统一）");
                         Self::migrate_v5_to_v6(conn)?;
                         Self::set_user_version(conn, 6)?;
+                    }
+                    6 => {
+                        log::info!("迁移数据库从 v6 到 v7（Dispatch runs 注册表）");
+                        Self::migrate_v6_to_v7(conn)?;
+                        Self::set_user_version(conn, 7)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1046,6 +1089,50 @@ impl Database {
         }
 
         log::info!("v5 -> v6 迁移完成：已添加使用量日聚合表，统一 copilot 模板类型");
+        Ok(())
+    }
+
+    /// v6 -> v7 迁移：新增 Dispatch runs 注册表
+    fn migrate_v6_to_v7(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dispatch_runs (
+                run_id TEXT PRIMARY KEY,
+                target TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                host_app TEXT NOT NULL DEFAULT 'claude',
+                cwd TEXT NOT NULL,
+                task_preview TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                timeout_seconds INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                exit_code INTEGER,
+                duration_ms INTEGER,
+                timed_out INTEGER NOT NULL DEFAULT 0,
+                cancelled INTEGER NOT NULL DEFAULT 0,
+                result_preview TEXT NOT NULL DEFAULT '',
+                result TEXT NOT NULL DEFAULT '',
+                stdout TEXT NOT NULL DEFAULT '',
+                stderr TEXT NOT NULL DEFAULT ''
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 dispatch_runs 表失败: {e}")))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dispatch_runs_status_started_at
+             ON dispatch_runs(status, started_at DESC)",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 dispatch_runs 状态索引失败: {e}")))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dispatch_runs_updated_at
+             ON dispatch_runs(updated_at DESC)",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 dispatch_runs 时间索引失败: {e}")))?;
+
+        log::info!("v6 -> v7 迁移完成：已添加 Dispatch runs 注册表");
         Ok(())
     }
 
