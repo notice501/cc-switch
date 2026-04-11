@@ -53,6 +53,19 @@ CCswitch Pro is more opinionated about real multi-provider workflows: keep sever
 
 That is the main reason this fork exists: not to repaint the upstream app, but to push harder toward practical multi-model collaboration.
 
+## What This Fork Added
+
+Beyond the upstream base, this fork now adds several workflow-oriented changes that materially change how it is used day to day:
+
+- A fully isolated **Pro** flavor with its own app identity, config root, local storage namespace, and deep-link scheme
+- **Claude alias launchers** such as `claude-dou`, `claude-kimi`, and similar wrappers, so different providers can be launched directly as separate working entries
+- A dedicated local **dispatch service** for routing child tasks to Claude or Codex providers
+- **Background async dispatch** with persisted run records instead of one blocking child call
+- A **tmux bridge mode** that can open a real Codex pane, run the sub-agent there, and automatically send the callback back to the current Claude pane
+- Better **dispatch observability** through status line integration, recent-run inspection, run details, and tail-style watching
+
+In short: upstream remains the base for provider management, while this fork pushes harder into “one expensive planner + one cheaper executor” style workflows.
+
 ## Core Capabilities
 
 [Full Changelog](CHANGELOG.md) | [Release Notes](docs/release-notes/v3.12.3-en.md)
@@ -67,6 +80,8 @@ That is the main reason this fork exists: not to repaint the upstream app, but t
 
 - Keep one provider as your main entry point, then dispatch subtasks to a better-fit Claude or Codex provider
 - Resolve dispatch targets through `alias`, provider name, provider id, or `current`
+- Dispatch runs in the background by default, with persisted run state, history, and callback inspection
+- Optional `tmux` bridge mode lets a real Codex pane execute the child task while the current Claude pane stays usable
 - A good fit for workflows like “Opus for architecture, Codex for implementation,” without pretending to be a fully automatic orchestrator
 
 ### Cost and usage control
@@ -79,6 +94,7 @@ That is the main reason this fork exists: not to repaint the upstream app, but t
 
 - Cloud sync, custom config directories, backups, and atomic writes help keep setups durable
 - This fork uses its own config directory, deep-link scheme, and local storage namespace
+- Claude alias launchers also use isolated per-alias homes, so provider-specific runtime state does not get mixed together
 - Easier to run side-by-side with upstream builds without mixing state by accident
 
 ### MCP, Prompts, and Skills support
@@ -102,6 +118,18 @@ That is the main reason this fork exists: not to repaint the upstream app, but t
 
 > **Note**: On first launch you can import existing CLI configs as your default provider set. The current dispatch path is primarily for Claude and Codex providers.
 
+## A More Accurate Current Workflow
+
+The most complete workflow in this fork today is:
+
+1. Use **Claude Code** as the main pane where you plan, review, and make decisions
+2. Keep **Codex** available as a child executor for implementation-heavy subtasks
+3. Use `/dispatch-task` to send a subtask to a specific Claude or Codex provider
+4. For long implementation tasks, use `monitor=pane` inside `tmux` so a real Codex pane runs beside your current Claude pane
+5. Let the child finish, then inspect or reuse the callback from `last`, `show`, or the automatic pane callback
+
+That is the most important practical change in this fork: not only switching providers, but turning multiple subscriptions into a more deliberate collaboration loop.
+
 ## How To Use The Dispatch Skill
 
 The dispatch workflow is currently exposed through the built-in **`/dispatch-task` skill inside Claude Code**. In practice:
@@ -116,7 +144,8 @@ The dispatch workflow is currently exposed through the built-in **`/dispatch-tas
 2. Keep the CCswitch Pro desktop app running
 3. In Claude Code, run `/dispatch-task providers` first to see available targets
 4. Pick a target and dispatch the subtask
-5. Use `status`, `last`, and `logs` to inspect the result
+5. For longer implementation tasks, optionally add `monitor=pane` inside `tmux`
+6. Use `status`, `list`, `show`, `last`, and `logs` to inspect the run or fetch the final result
 
 ### Command format
 
@@ -125,7 +154,11 @@ The dispatch workflow is currently exposed through the built-in **`/dispatch-tas
 /dispatch-task status
 /dispatch-task last
 /dispatch-task logs [count]
-/dispatch-task <app:provider> [timeout=<seconds>] [wait=true] -- <task text>
+/dispatch-task list [count]
+/dispatch-task show <run_id>
+/dispatch-task watch <run_id>
+/dispatch-task cancel <run_id>
+/dispatch-task <app:provider> [timeout=<seconds>] [wait=true] [monitor=pane|none] -- <task text>
 ```
 
 Notes:
@@ -134,6 +167,8 @@ Notes:
 - `provider` can be an `alias`, provider name, provider id, or `current`
 - Default timeout is `120` seconds and the max is `900`
 - Dispatch runs in the background by default; add `wait=true` if you want the current Claude Code session to block until the child finishes
+- `monitor=pane` requires `tmux`, must be run from inside a `tmux` pane, and currently targets a real **Codex** pane workflow
+- `wait=true` cannot be combined with `monitor=pane`
 - The actual task must appear after `--`
 
 ### Common commands
@@ -188,7 +223,34 @@ Useful for quickly seeing whether recent dispatches succeeded, who they were sen
 /dispatch-task codex:current -- Implement the first part directly based on the agreed plan.
 /dispatch-task codex:aliyun-codex timeout=600 -- Implement the API layer and tests based on the breakdown above.
 /dispatch-task codex:aliyun-codex timeout=600 wait=true -- Block until the API layer and tests are done.
+/dispatch-task codex:current monitor=pane -- Implement the child task in a real tmux Codex pane and callback automatically when done.
 ```
+
+#### 6. List recent runs
+
+```text
+/dispatch-task list
+/dispatch-task list 10
+```
+
+Useful for quickly seeing the most recent running, succeeded, failed, timed-out, or cancelled child runs.
+
+#### 7. Inspect or watch one run
+
+```text
+/dispatch-task show <run_id>
+/dispatch-task watch <run_id>
+```
+
+Use `show` when you want the stored summary, stdout/stderr tails, callback, and deliverable. Use `watch` when you want a live terminal-style refresh for one run.
+
+#### 8. Cancel a running run
+
+```text
+/dispatch-task cancel <run_id>
+```
+
+Useful when a child run is no longer needed, has drifted, or is obviously taking the wrong path.
 
 ### Example workflow
 
@@ -216,6 +278,7 @@ Useful for quickly seeing whether recent dispatches succeeded, who they were sen
 
 ```text
 /dispatch-task status
+/dispatch-task list
 /dispatch-task last
 /dispatch-task logs 5
 ```
@@ -229,11 +292,22 @@ If you keep both Aliyun and Zhipu coding plans available in CCswitch Pro, you ca
 /dispatch-task codex:zhipu-codex -- Then handle the next subtask that fits this provider better.
 ```
 
+#### Real tmux bridge workflow
+
+If you are working inside `tmux`, you can keep Claude in the current pane and open a real Codex child pane to execute the subtask:
+
+```text
+/dispatch-task codex:current monitor=pane -- Implement the child task in the adjacent Codex pane and send the callback back when finished.
+```
+
+This is different from a passive monitor. The right pane is an actual child Codex execution pane, not just a log viewer.
+
 ### Practical tips
 
 - If you are unsure about the target syntax, run `/dispatch-task providers` first
 - To use the currently active provider, write `claude:current` or `codex:current`
 - For longer jobs, explicitly add `timeout=600`
+- If you want the split-pane workflow, start from inside `tmux` and use `monitor=pane`
 - If you see a dispatch-service-not-found error, make sure the **CCswitch Pro desktop app is running**
 
 ## Installation
@@ -290,6 +364,9 @@ For most tools, yes. Restart the terminal or the CLI tool for changes to take ef
 - **Database**: `~/.ccswitch-pro/cc-switch.db`
 - **Local settings**: `~/.ccswitch-pro/settings.json`
 - **Backups**: `~/.ccswitch-pro/backups/`
+- **Claude alias homes**: `~/.ccswitch-pro/alias-homes/<alias>/`
+- **Dispatch status**: `~/.ccswitch-pro/dispatch-status.json`
+- **Dispatch history**: `~/.ccswitch-pro/dispatch-history.jsonl`
 - **Skills**: `~/.ccswitch-pro/skills/`
 - **Skill backups**: `~/.ccswitch-pro/skill-backups/`
 
