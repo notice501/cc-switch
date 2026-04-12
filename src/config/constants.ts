@@ -8,6 +8,7 @@ export const TEMPLATE_TYPES = {
   CUSTOM: "custom",
   GENERAL: "general",
   NEW_API: "newapi",
+  CODEX_CHATGPT_OAUTH: "codex_chatgpt_oauth",
   GITHUB_COPILOT: "github_copilot",
 } as const;
 

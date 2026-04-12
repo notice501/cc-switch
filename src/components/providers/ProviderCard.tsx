@@ -87,6 +87,13 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
   return fallbackText;
 };
 
+const isCodexOAuthProvider = (provider: Provider, appId: AppId) =>
+  appId === "codex" &&
+  typeof provider.settingsConfig === "object" &&
+  provider.settingsConfig !== null &&
+  typeof (provider.settingsConfig as Record<string, unknown>).oauth === "object" &&
+  (provider.settingsConfig as Record<string, unknown>).oauth !== null;
+
 export function ProviderCard({
   provider,
   isCurrent,
@@ -144,7 +151,9 @@ export function ProviderCard({
     return true;
   }, [provider.notes, displayUrl, fallbackUrlText]);
 
-  const usageEnabled = provider.meta?.usage_script?.enabled ?? false;
+  const usageEnabled = isCodexOAuthProvider(provider, appId)
+    ? (provider.meta?.usage_script?.enabled ?? true)
+    : (provider.meta?.usage_script?.enabled ?? false);
 
   // 获取用量数据以判断是否有多套餐
   // 累加模式应用（OpenCode/OpenClaw）：使用 isInConfig 代替 isCurrent

@@ -3,11 +3,18 @@
 //! Handles executing and formatting usage query results.
 
 use crate::app_config::AppType;
+use crate::codex_oauth::{extract_oauth_config, persist_oauth_refresh_if_needed};
 use crate::error::AppError;
-use crate::provider::{UsageData, UsageResult, UsageScript};
+use crate::provider::{Provider, UsageData, UsageResult, UsageScript};
 use crate::settings;
 use crate::store::AppState;
 use crate::usage_script;
+use chrono::{TimeZone, Utc};
+use serde_json::Value;
+
+const TEMPLATE_TYPE_CODEX_CHATGPT_OAUTH: &str = "codex_chatgpt_oauth";
+const CODEX_USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_USAGE_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 
 /// Execute usage script and format result (private helper method)
 pub(crate) async fn execute_and_format_usage_result(
@@ -109,6 +116,213 @@ fn extract_base_url_from_provider(provider: &crate::provider::Provider) -> Optio
     }
 }
 
+fn provider_supports_builtin_codex_usage(app_type: AppType, provider: &Provider) -> bool {
+    matches!(app_type, AppType::Codex) && extract_oauth_config(&provider.settings_config).is_some()
+}
+
+fn provider_uses_builtin_codex_usage(
+    app_type: AppType,
+    provider: &Provider,
+    usage_script: Option<&UsageScript>,
+) -> bool {
+    if !provider_supports_builtin_codex_usage(app_type, provider) {
+        return false;
+    }
+
+    match usage_script.and_then(|script| script.template_type.as_deref()) {
+        Some(TEMPLATE_TYPE_CODEX_CHATGPT_OAUTH) => true,
+        Some(_) => false,
+        None => true,
+    }
+}
+
+async fn fetch_codex_oauth_usage(
+    provider: &Provider,
+    endpoint_override: Option<&str>,
+) -> Result<UsageResult, AppError> {
+    let oauth = extract_oauth_config(&provider.settings_config).ok_or_else(|| {
+        AppError::localized(
+            "provider.usage.codex_oauth_missing",
+            "当前 Codex Provider 未绑定 OAuth 账号",
+            "This Codex provider is not bound to an OAuth account",
+        )
+    })?;
+
+    if oauth.access_token.trim().is_empty() || oauth.account_id.trim().is_empty() {
+        return Ok(UsageResult {
+            success: false,
+            data: None,
+            error: Some("Codex OAuth 凭证不完整".to_string()),
+        });
+    }
+
+    let endpoint = endpoint_override
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(CODEX_USAGE_ENDPOINT);
+    let response = reqwest::Client::new()
+        .get(endpoint)
+        .header("authorization", format!("Bearer {}", oauth.access_token))
+        .header("chatgpt-account-id", oauth.account_id)
+        .header("user-agent", CODEX_USAGE_USER_AGENT)
+        .send()
+        .await
+        .map_err(|e| {
+            AppError::localized(
+                "provider.usage.codex_oauth_request_failed",
+                format!("Codex 用量请求失败: {e}"),
+                format!("Codex usage request failed: {e}"),
+            )
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        AppError::localized(
+            "provider.usage.codex_oauth_response_failed",
+            format!("读取 Codex 用量响应失败: {e}"),
+            format!("Failed to read Codex usage response: {e}"),
+        )
+    })?;
+
+    if !status.is_success() {
+        return Ok(UsageResult {
+            success: false,
+            data: None,
+            error: Some(format!("Codex usage API returned {status}: {body}")),
+        });
+    }
+
+    let json: Value = serde_json::from_str(&body).map_err(|e| {
+        AppError::localized(
+            "provider.usage.codex_oauth_parse_failed",
+            format!("解析 Codex 用量响应失败: {e}"),
+            format!("Failed to parse Codex usage response: {e}"),
+        )
+    })?;
+
+    let data = parse_codex_usage_data(&json);
+    Ok(UsageResult {
+        success: true,
+        data: Some(data),
+        error: None,
+    })
+}
+
+fn parse_codex_usage_data(root: &Value) -> Vec<UsageData> {
+    let plan_type = root
+        .get("plan_type")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    let mut results = Vec::new();
+
+    if let Some(rate_limit) = root.get("rate_limit").and_then(Value::as_object) {
+        if let Some(primary) = rate_limit.get("primary_window") {
+            if let Some(item) = parse_codex_usage_window("5h", primary, plan_type.as_deref()) {
+                results.push(item);
+            }
+        }
+        if let Some(secondary) = rate_limit.get("secondary_window") {
+            if let Some(item) = parse_codex_usage_window("weekly", secondary, plan_type.as_deref())
+            {
+                results.push(item);
+            }
+        }
+    }
+
+    if let Some(credits) = root.get("credits").and_then(Value::as_object) {
+        let balance = credits
+            .get("balance")
+            .and_then(Value::as_str)
+            .and_then(|value| value.parse::<f64>().ok());
+        let has_credits = credits
+            .get("has_credits")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let unlimited = credits
+            .get("unlimited")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        if has_credits || unlimited || balance.is_some() {
+            let extra = if unlimited {
+                Some("Unlimited credits".to_string())
+            } else {
+                None
+            };
+            let unit = if balance.is_some() {
+                Some("USD".to_string())
+            } else {
+                None
+            };
+            results.push(UsageData {
+                plan_name: plan_type
+                    .as_ref()
+                    .map(|plan| format!("{plan} credits"))
+                    .or_else(|| Some("credits".to_string())),
+                extra,
+                is_valid: Some(true),
+                invalid_message: None,
+                total: None,
+                used: None,
+                remaining: balance,
+                unit,
+            });
+        }
+    }
+
+    if results.is_empty() {
+        results.push(UsageData {
+            plan_name: plan_type,
+            extra: None,
+            is_valid: Some(false),
+            invalid_message: Some("No usable usage windows found".to_string()),
+            total: None,
+            used: None,
+            remaining: None,
+            unit: None,
+        });
+    }
+
+    results
+}
+
+fn parse_codex_usage_window(
+    label: &str,
+    window: &Value,
+    plan_type: Option<&str>,
+) -> Option<UsageData> {
+    let window_obj = window.as_object()?;
+    let used = match window_obj.get("used_percent") {
+        Some(Value::Number(num)) => num.as_f64(),
+        _ => None,
+    }?;
+    let remaining = (100.0 - used).max(0.0);
+    let reset_at = window_obj
+        .get("reset_at")
+        .and_then(Value::as_i64)
+        .and_then(format_codex_usage_reset_at);
+
+    Some(UsageData {
+        plan_name: Some(match plan_type {
+            Some(plan) if !plan.trim().is_empty() => format!("{plan} {label}"),
+            _ => label.to_string(),
+        }),
+        extra: reset_at.map(|text| format!("Reset: {text}")),
+        is_valid: Some(true),
+        invalid_message: None,
+        total: Some(100.0),
+        used: Some(used),
+        remaining: Some(remaining),
+        unit: Some("%".to_string()),
+    })
+}
+
+fn format_codex_usage_reset_at(timestamp: i64) -> Option<String> {
+    Utc.timestamp_opt(timestamp, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+}
+
 /// Query provider usage (using saved script configuration)
 pub async fn query_usage(
     state: &AppState,
@@ -125,24 +339,36 @@ pub async fn query_usage(
             )
         })?;
 
-        let usage_script = provider
-            .meta
-            .as_ref()
-            .and_then(|m| m.usage_script.as_ref())
-            .ok_or_else(|| {
-                AppError::localized(
-                    "provider.usage.script.missing",
-                    "未配置用量查询脚本",
-                    "Usage script is not configured",
-                )
-            })?;
-        if !usage_script.enabled {
+        let usage_script = provider.meta.as_ref().and_then(|m| m.usage_script.as_ref());
+
+        if usage_script.is_some_and(|script| !script.enabled) {
             return Err(AppError::localized(
                 "provider.usage.disabled",
                 "用量查询未启用",
                 "Usage query is disabled",
             ));
         }
+
+        if provider_uses_builtin_codex_usage(app_type.clone(), provider, usage_script) {
+            let effective_provider = persist_oauth_refresh_if_needed(state.db.as_ref(), provider, false)?;
+            let refreshed_provider = Provider {
+                settings_config: effective_provider,
+                ..provider.clone()
+            };
+            return fetch_codex_oauth_usage(
+                &refreshed_provider,
+                usage_script.and_then(|script| script.base_url.as_deref()),
+            )
+            .await;
+        }
+
+        let usage_script = usage_script.ok_or_else(|| {
+            AppError::localized(
+                "provider.usage.script.missing",
+                "未配置用量查询脚本",
+                "Usage script is not configured",
+            )
+        })?;
 
         // Get credentials: prioritize UsageScript values, fallback to provider config
         let api_key = usage_script
@@ -185,9 +411,9 @@ pub async fn query_usage(
 /// Test usage script (using temporary script content, not saved)
 #[allow(clippy::too_many_arguments)]
 pub async fn test_usage_script(
-    _state: &AppState,
-    _app_type: AppType,
-    _provider_id: &str,
+    state: &AppState,
+    app_type: AppType,
+    provider_id: &str,
     script_code: &str,
     timeout: u64,
     api_key: Option<&str>,
@@ -196,6 +422,27 @@ pub async fn test_usage_script(
     user_id: Option<&str>,
     template_type: Option<&str>,
 ) -> Result<UsageResult, AppError> {
+    if template_type == Some(TEMPLATE_TYPE_CODEX_CHATGPT_OAUTH) {
+        let providers = state.db.get_all_providers(app_type.as_str())?;
+        let provider = providers.get(provider_id).ok_or_else(|| {
+            AppError::localized(
+                "provider.not_found",
+                format!("供应商不存在: {provider_id}"),
+                format!("Provider not found: {provider_id}"),
+            )
+        })?;
+
+        if !provider_supports_builtin_codex_usage(app_type, provider) {
+            return Err(AppError::localized(
+                "provider.usage.codex_oauth_missing",
+                "当前 Codex Provider 未绑定 OAuth 账号",
+                "This Codex provider is not bound to an OAuth account",
+            ));
+        }
+
+        return fetch_codex_oauth_usage(provider, base_url).await;
+    }
+
     // Use provided credential parameters directly for testing
     execute_and_format_usage_result(
         script_code,
@@ -225,4 +472,93 @@ pub(crate) fn validate_usage_script(script: &UsageScript) -> Result<(), AppError
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_codex_usage_data_maps_windows_and_credits() {
+        let data = parse_codex_usage_data(&json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 81.5,
+                    "limit_window_seconds": 18000,
+                    "reset_at": 1760000000
+                },
+                "secondary_window": {
+                    "used_percent": 12.0,
+                    "limit_window_seconds": 604800,
+                    "reset_at": 1760600000
+                }
+            },
+            "credits": {
+                "has_credits": true,
+                "unlimited": false,
+                "balance": "42.5"
+            }
+        }));
+
+        assert_eq!(data.len(), 3);
+        assert_eq!(data[0].plan_name.as_deref(), Some("pro 5h"));
+        assert_eq!(data[0].used, Some(81.5));
+        assert_eq!(data[0].remaining, Some(18.5));
+        assert_eq!(data[0].unit.as_deref(), Some("%"));
+
+        assert_eq!(data[1].plan_name.as_deref(), Some("pro weekly"));
+        assert_eq!(data[1].remaining, Some(88.0));
+
+        assert_eq!(data[2].plan_name.as_deref(), Some("pro credits"));
+        assert_eq!(data[2].remaining, Some(42.5));
+        assert_eq!(data[2].unit.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn provider_uses_builtin_codex_usage_defaults_for_oauth_provider() {
+        let provider = Provider::with_id(
+            "oauth".to_string(),
+            "OAuth".to_string(),
+            json!({
+                "oauth": {
+                    "accountId": "acct-1",
+                    "accessToken": "access",
+                    "refreshToken": "refresh"
+                },
+                "auth": {
+                    "tokens": {
+                        "account_id": "acct-1",
+                        "access_token": "access",
+                        "refresh_token": "refresh"
+                    }
+                },
+                "config": ""
+            }),
+            None,
+        );
+
+        assert!(provider_uses_builtin_codex_usage(
+            AppType::Codex,
+            &provider,
+            None,
+        ));
+        assert!(!provider_uses_builtin_codex_usage(
+            AppType::Codex,
+            &provider,
+            Some(&UsageScript {
+                enabled: true,
+                language: "javascript".to_string(),
+                code: "return {}".to_string(),
+                timeout: None,
+                api_key: None,
+                base_url: None,
+                access_token: None,
+                user_id: None,
+                template_type: Some("general".to_string()),
+                auto_query_interval: None,
+            }),
+        ));
+    }
 }

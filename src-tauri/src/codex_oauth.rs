@@ -362,6 +362,29 @@ pub fn extract_oauth_config(settings: &Value) -> Option<CodexOAuthConfig> {
     serde_json::from_value(settings.get("oauth")?.clone()).ok()
 }
 
+pub fn sync_oauth_settings_from_live_auth(
+    existing_settings: &Value,
+    live_auth: &Value,
+) -> Result<Value, AppError> {
+    let mut settings = existing_settings
+        .as_object()
+        .cloned()
+        .unwrap_or_else(Map::new);
+    settings.insert("auth".to_string(), live_auth.clone());
+
+    let Some(existing_oauth) = extract_oauth_config(existing_settings) else {
+        return Ok(Value::Object(settings));
+    };
+
+    let synced_oauth = oauth_from_auth_json(live_auth, Some(&existing_oauth))?;
+    settings.insert(
+        "oauth".to_string(),
+        serde_json::to_value(synced_oauth).unwrap_or(Value::Null),
+    );
+
+    Ok(Value::Object(settings))
+}
+
 pub fn ensure_unique_account(
     db: &Database,
     provider_id: Option<&str>,
@@ -705,6 +728,103 @@ fn oauth_http_client() -> Result<Client, AppError> {
         .map_err(|e| AppError::Message(format!("创建 Codex OAuth 客户端失败: {e}")))
 }
 
+fn oauth_from_auth_json(
+    auth_json: &Value,
+    previous: Option<&CodexOAuthConfig>,
+) -> Result<CodexOAuthConfig, AppError> {
+    let auth_mode = non_empty_string(auth_json.get("auth_mode"))
+        .map(str::to_string)
+        .or_else(|| previous.map(|oauth| oauth.auth_mode.clone()))
+        .unwrap_or_else(default_chatgpt_auth_mode);
+
+    let access_token = nested_non_empty_string(auth_json, &["tokens", "access_token"])
+        .map(str::to_string)
+        .or_else(|| previous.map(|oauth| oauth.access_token.clone()))
+        .ok_or_else(|| AppError::Message("Codex OAuth auth.json 缺少 access token".to_string()))?;
+    let refresh_token = nested_non_empty_string(auth_json, &["tokens", "refresh_token"])
+        .map(str::to_string)
+        .or_else(|| previous.map(|oauth| oauth.refresh_token.clone()))
+        .ok_or_else(|| AppError::Message("Codex OAuth auth.json 缺少 refresh token".to_string()))?;
+    let account_id = nested_non_empty_string(auth_json, &["tokens", "account_id"])
+        .map(str::to_string)
+        .or_else(|| previous.map(|oauth| oauth.account_id.clone()))
+        .ok_or_else(|| AppError::Message("Codex OAuth auth.json 缺少账号 ID".to_string()))?;
+    let id_token = nested_non_empty_string(auth_json, &["tokens", "id_token"])
+        .map(str::to_string)
+        .or_else(|| previous.and_then(|oauth| oauth.id_token.clone()));
+    let last_refresh = non_empty_string(auth_json.get("last_refresh"))
+        .map(str::to_string)
+        .or_else(|| previous.and_then(|oauth| oauth.last_refresh.clone()));
+
+    let access_claims = decode_jwt_claims(&access_token)?;
+    let id_claims = id_token
+        .as_deref()
+        .map(decode_jwt_claims)
+        .transpose()?;
+
+    let access_expires_at = access_claims
+        .exp
+        .or_else(|| previous.and_then(|oauth| oauth.access_token_expires_at));
+    let id_expires_at = id_claims
+        .as_ref()
+        .and_then(|claims| claims.exp)
+        .or_else(|| id_token.as_deref().and_then(jwt_exp_from_token))
+        .or_else(|| previous.and_then(|oauth| oauth.id_token_expires_at));
+
+    let email = id_claims
+        .as_ref()
+        .and_then(|claims| claims.email.clone())
+        .or_else(|| {
+            access_claims
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.email.clone())
+        })
+        .or_else(|| access_claims.email.clone())
+        .or_else(|| previous.and_then(|oauth| oauth.email.clone()));
+
+    let name = id_claims
+        .as_ref()
+        .and_then(|claims| claims.name.clone())
+        .or_else(|| access_claims.name.clone())
+        .or_else(|| previous.and_then(|oauth| oauth.name.clone()));
+
+    let auth_provider = id_claims
+        .as_ref()
+        .and_then(|claims| claims.auth_provider.clone())
+        .or_else(|| access_claims.auth_provider.clone())
+        .or_else(|| previous.and_then(|oauth| oauth.auth_provider.clone()));
+
+    let plan_type = access_claims
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.chatgpt_plan_type.clone())
+        .or_else(|| previous.and_then(|oauth| oauth.plan_type.clone()));
+
+    let chatgpt_user_id = access_claims
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.chatgpt_user_id.clone().or_else(|| auth.user_id.clone()))
+        .or_else(|| previous.and_then(|oauth| oauth.chatgpt_user_id.clone()));
+
+    Ok(CodexOAuthConfig {
+        auth_mode,
+        account_id,
+        access_token,
+        refresh_token,
+        id_token,
+        access_token_expires_at: access_expires_at,
+        id_token_expires_at: id_expires_at,
+        email,
+        name,
+        auth_provider,
+        plan_type,
+        chatgpt_user_id,
+        last_refresh,
+        invalid_reason: None,
+    })
+}
+
 fn oauth_from_token_response(
     response: OAuthTokenResponse,
     previous: Option<&CodexOAuthConfig>,
@@ -811,6 +931,18 @@ fn decode_jwt_claims(token: &str) -> Result<JwtAuthClaims, AppError> {
     let payload = decode_jwt_payload(token)?;
     serde_json::from_value(payload)
         .map_err(|e| AppError::Message(format!("解析 Codex OAuth token claims 失败: {e}")))
+}
+
+fn non_empty_string(value: Option<&Value>) -> Option<&str> {
+    value.and_then(Value::as_str).filter(|value| !value.trim().is_empty())
+}
+
+fn nested_non_empty_string<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    non_empty_string(Some(current))
 }
 
 fn jwt_exp_from_token(token: &str) -> Option<i64> {

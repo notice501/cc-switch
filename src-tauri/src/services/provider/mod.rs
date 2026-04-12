@@ -19,7 +19,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::app_config::AppType;
-use crate::codex_oauth::{ensure_unique_account, extract_oauth_config};
+use crate::codex_oauth::{
+    ensure_unique_account, extract_oauth_config, sync_oauth_settings_from_live_auth,
+};
 use crate::error::AppError;
 use crate::provider::{Provider, UsageResult};
 use crate::services::mcp::McpService;
@@ -654,20 +656,49 @@ impl ProviderService {
                     // Only backfill when switching to a different provider
                     if let Ok(live_config) = read_live_settings(app_type.clone()) {
                         if let Some(mut current_provider) = providers.get(&current_id).cloned() {
-                            current_provider.settings_config =
-                                strip_common_config_from_live_settings(
+                            let backfilled_settings = if matches!(app_type, AppType::Codex)
+                                && extract_oauth_config(&current_provider.settings_config).is_some()
+                            {
+                                live_config
+                                    .get("auth")
+                                    .ok_or_else(|| {
+                                        AppError::Message(
+                                            "Codex live 配置缺少 auth.json 内容".to_string(),
+                                        )
+                                    })
+                                    .and_then(|auth| {
+                                        sync_oauth_settings_from_live_auth(
+                                            &current_provider.settings_config,
+                                            auth,
+                                        )
+                                    })
+                            } else {
+                                Ok(strip_common_config_from_live_settings(
                                     state.db.as_ref(),
                                     &app_type,
                                     &current_provider,
                                     live_config,
-                                );
-                            if let Err(e) =
-                                state.db.save_provider(app_type.as_str(), &current_provider)
-                            {
-                                log::warn!("Backfill failed: {e}");
-                                result
-                                    .warnings
-                                    .push(format!("backfill_failed:{current_id}"));
+                                ))
+                            };
+
+                            match backfilled_settings {
+                                Ok(settings) => {
+                                    current_provider.settings_config = settings;
+                                    if let Err(e) =
+                                        state.db.save_provider(app_type.as_str(), &current_provider)
+                                    {
+                                        log::warn!("Backfill failed: {e}");
+                                        result
+                                            .warnings
+                                            .push(format!("backfill_failed:{current_id}"));
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!("Backfill failed: {e}");
+                                    result
+                                        .warnings
+                                        .push(format!("backfill_failed:{current_id}"));
+                                }
                             }
                         }
                     }

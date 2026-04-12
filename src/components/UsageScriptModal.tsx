@@ -95,6 +95,7 @@ const generatePresetTemplates = (
 
   // GitHub Copilot 模板不需要脚本，使用专用 API
   [TEMPLATE_TYPES.GITHUB_COPILOT]: "",
+  [TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH]: "",
 });
 
 // 模板名称国际化键映射
@@ -102,8 +103,16 @@ const TEMPLATE_NAME_KEYS: Record<string, string> = {
   [TEMPLATE_TYPES.CUSTOM]: "usageScript.templateCustom",
   [TEMPLATE_TYPES.GENERAL]: "usageScript.templateGeneral",
   [TEMPLATE_TYPES.NEW_API]: "usageScript.templateNewAPI",
+  [TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH]: "usageScript.templateCodexChatgpt",
   [TEMPLATE_TYPES.GITHUB_COPILOT]: "usageScript.templateCopilot",
 };
+
+const isCodexOAuthProvider = (provider: Provider, appId: AppId) =>
+  appId === "codex" &&
+  typeof provider.settingsConfig === "object" &&
+  provider.settingsConfig !== null &&
+  typeof (provider.settingsConfig as Record<string, unknown>).oauth === "object" &&
+  (provider.settingsConfig as Record<string, unknown>).oauth !== null;
 
 const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
   provider,
@@ -161,13 +170,16 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
   };
 
   const providerCredentials = getProviderCredentials();
+  const isCodexOAuthUsageProvider = isCodexOAuthProvider(provider, appId);
 
   const [script, setScript] = useState<UsageScript>(() => {
     const savedScript = provider.meta?.usage_script;
     const defaultScript = {
-      enabled: false,
+      enabled: isCodexOAuthUsageProvider,
       language: "javascript" as const,
-      code: PRESET_TEMPLATES[TEMPLATE_TYPES.GENERAL],
+      code: isCodexOAuthUsageProvider
+        ? PRESET_TEMPLATES[TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH]
+        : PRESET_TEMPLATES[TEMPLATE_TYPES.GENERAL],
       timeout: 10,
     };
 
@@ -238,6 +250,9 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
       if (existingScript?.templateType) {
         return existingScript.templateType;
       }
+      if (isCodexOAuthUsageProvider) {
+        return TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH;
+      }
       // 向后兼容：根据字段推断模板类型
       // 检测 NEW_API 模板（有 accessToken 或 userId）
       if (existingScript?.accessToken || existingScript?.userId) {
@@ -254,6 +269,9 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
 
   const [showApiKey, setShowApiKey] = useState(false);
   const [showAccessToken, setShowAccessToken] = useState(false);
+  const isBuiltinTemplate =
+    selectedTemplate === TEMPLATE_TYPES.GITHUB_COPILOT ||
+    selectedTemplate === TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH;
 
   const handleEnableToggle = (checked: boolean) => {
     if (checked && !settingsData?.usageConfirmed) {
@@ -277,8 +295,8 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
   };
 
   const handleSave = () => {
-    // Copilot 模板不需要脚本验证
-    if (selectedTemplate !== TEMPLATE_TYPES.GITHUB_COPILOT) {
+    // 内建模板不需要脚本验证
+    if (!isBuiltinTemplate) {
       if (script.enabled && !script.code.trim()) {
         toast.error(t("usageScript.scriptEmpty"));
         return;
@@ -295,6 +313,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
         | "custom"
         | "general"
         | "newapi"
+        | "codex_chatgpt_oauth"
         | "github_copilot"
         | undefined,
     };
@@ -334,6 +353,45 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             },
           ],
         });
+        return;
+      }
+
+      if (selectedTemplate === TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH) {
+        const result = await usageApi.testScript(
+          provider.id,
+          appId,
+          "",
+          script.timeout,
+          undefined,
+          script.baseUrl,
+          undefined,
+          undefined,
+          TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH,
+        );
+        if (result.success && result.data && result.data.length > 0) {
+          const summary = result.data
+            .map((plan: UsageData) => {
+              const planInfo = plan.planName ? `[${plan.planName}] ` : "";
+              const remaining =
+                plan.remaining !== undefined
+                  ? `${t("usage.remaining")} ${plan.remaining.toFixed(2)}${plan.unit ? ` ${plan.unit}` : ""}`
+                  : plan.extra || t("endpointTest.noResult");
+              return `${planInfo}${remaining}`;
+            })
+            .join(", ");
+          toast.success(`${t("usageScript.testSuccess")}${summary}`, {
+            duration: 3000,
+            closeButton: true,
+          });
+          queryClient.setQueryData(["usage", provider.id, appId], result);
+        } else {
+          toast.error(
+            `${t("usageScript.testFailed")}: ${result.error || t("endpointTest.noResult")}`,
+            {
+              duration: 5000,
+            },
+          );
+        }
         return;
       }
 
@@ -446,6 +504,14 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           accessToken: undefined,
           userId: undefined,
         });
+      } else if (presetName === TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH) {
+        setScript({
+          ...script,
+          code: "",
+          apiKey: undefined,
+          accessToken: undefined,
+          userId: undefined,
+        });
       }
       setSelectedTemplate(presetName);
     }
@@ -528,9 +594,16 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                 .filter((name) => {
                   const isCopilotProvider =
                     provider.meta?.providerType === "github_copilot";
+                  const isBuiltinCodexProvider = isCodexOAuthUsageProvider;
                   // Copilot 供应商只显示 copilot 模板，其他供应商不显示 copilot 模板
                   if (isCopilotProvider) {
                     return name === TEMPLATE_TYPES.GITHUB_COPILOT;
+                  }
+                  if (isBuiltinCodexProvider) {
+                    return name !== TEMPLATE_TYPES.GITHUB_COPILOT;
+                  }
+                  if (name === TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH) {
+                    return false;
                   }
                   return name !== TEMPLATE_TYPES.GITHUB_COPILOT;
                 })
@@ -629,6 +702,17 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
               <div className="space-y-2 border-t border-white/10 pt-3">
                 <p className="text-sm text-muted-foreground">
                   {t("usageScript.copilotAutoAuth")}
+                </p>
+              </div>
+            )}
+
+            {selectedTemplate === TEMPLATE_TYPES.CODEX_CHATGPT_OAUTH && (
+              <div className="space-y-2 border-t border-white/10 pt-3">
+                <p className="text-sm text-muted-foreground">
+                  {t("usageScript.codexOauthAutoAuth", {
+                    defaultValue:
+                      "使用当前 Codex OAuth 账号自动查询 ChatGPT usage，不需要脚本和额外凭证。",
+                  })}
                 </p>
               </div>
             )}
@@ -859,7 +943,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           </div>
 
           {/* 提取器代码 - Copilot 模板不需要 */}
-          {selectedTemplate !== TEMPLATE_TYPES.GITHUB_COPILOT && (
+          {!isBuiltinTemplate && (
             <div className="space-y-4 glass rounded-xl border border-white/10 p-6">
               <div className="flex items-center justify-between">
                 <Label className="text-base font-medium">
@@ -881,7 +965,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
           )}
 
           {/* 帮助信息 - Copilot 模板不需要 */}
-          {selectedTemplate !== TEMPLATE_TYPES.GITHUB_COPILOT && (
+          {!isBuiltinTemplate && (
             <div className="glass rounded-xl border border-white/10 p-6 text-sm text-foreground/90">
               <h4 className="font-medium mb-2">
                 {t("usageScript.scriptHelp")}

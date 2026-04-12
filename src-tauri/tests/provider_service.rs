@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use serde_json::json;
 
 use cc_switch_lib::{
@@ -20,6 +22,14 @@ fn sanitize_provider_name(name: &str) -> String {
         })
         .collect::<String>()
         .to_lowercase()
+}
+
+fn make_test_jwt(payload: serde_json::Value) -> String {
+    let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
+    let payload = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&payload).expect("serialize jwt payload"),
+    );
+    format!("{header}.{payload}.sig")
 }
 
 #[test]
@@ -1056,5 +1066,225 @@ fn provider_service_switch_codex_oauth_writes_chatgpt_auth_json() {
             .and_then(|tokens| tokens.get("account_id"))
             .and_then(|value| value.as_str()),
         Some("acct-oauth")
+    );
+}
+
+#[test]
+fn provider_service_switch_codex_oauth_backfills_live_auth_without_dropping_oauth() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let future_exp = chrono::Utc::now().timestamp() + 3600;
+
+    let access_a_stored = make_test_jwt(json!({
+        "exp": future_exp - 120,
+        "email": "a@example.com",
+        "name": "Account A",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-a",
+            "chatgpt_plan_type": "plus",
+            "chatgpt_user_id": "user-a"
+        }
+    }));
+    let access_a_live = make_test_jwt(json!({
+        "exp": future_exp,
+        "email": "a@example.com",
+        "name": "Account A Live",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-a",
+            "chatgpt_plan_type": "pro",
+            "chatgpt_user_id": "user-a"
+        }
+    }));
+    let id_a_stored = make_test_jwt(json!({
+        "exp": future_exp - 120,
+        "email": "a@example.com",
+        "name": "Account A",
+        "auth_provider": "google"
+    }));
+    let id_a_live = make_test_jwt(json!({
+        "exp": future_exp,
+        "email": "a@example.com",
+        "name": "Account A Live",
+        "auth_provider": "google"
+    }));
+
+    let access_b = make_test_jwt(json!({
+        "exp": future_exp,
+        "email": "b@example.com",
+        "name": "Account B",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-b",
+            "chatgpt_plan_type": "plus",
+            "chatgpt_user_id": "user-b"
+        }
+    }));
+    let id_b = make_test_jwt(json!({
+        "exp": future_exp,
+        "email": "b@example.com",
+        "name": "Account B",
+        "auth_provider": "google"
+    }));
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "oauth-a".to_string();
+        manager.providers.insert(
+            "oauth-a".to_string(),
+            Provider::with_id(
+                "oauth-a".to_string(),
+                "OAuth A".to_string(),
+                json!({
+                    "auth": {
+                        "auth_mode": "chatgpt",
+                        "OPENAI_API_KEY": null,
+                        "tokens": {
+                            "id_token": id_a_stored,
+                            "account_id": "acct-a",
+                            "access_token": access_a_stored,
+                            "refresh_token": "refresh-a-stored"
+                        },
+                        "last_refresh": "2026-03-28T00:00:00Z"
+                    },
+                    "oauth": {
+                        "authMode": "chatgpt",
+                        "accountId": "acct-a",
+                        "accessToken": access_a_stored,
+                        "refreshToken": "refresh-a-stored",
+                        "idToken": id_a_stored,
+                        "accessTokenExpiresAt": future_exp - 120,
+                        "idTokenExpiresAt": future_exp - 120,
+                        "email": "a@example.com",
+                        "name": "Account A",
+                        "authProvider": "google",
+                        "planType": "plus",
+                        "chatgptUserId": "user-a",
+                        "lastRefresh": "2026-03-28T00:00:00Z"
+                    },
+                    "config": "model = \"provider-a\"\n"
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "oauth-b".to_string(),
+            Provider::with_id(
+                "oauth-b".to_string(),
+                "OAuth B".to_string(),
+                json!({
+                    "auth": {
+                        "auth_mode": "chatgpt",
+                        "OPENAI_API_KEY": null,
+                        "tokens": {
+                            "id_token": id_b,
+                            "account_id": "acct-b",
+                            "access_token": access_b,
+                            "refresh_token": "refresh-b"
+                        },
+                        "last_refresh": "2026-03-29T00:00:00Z"
+                    },
+                    "oauth": {
+                        "authMode": "chatgpt",
+                        "accountId": "acct-b",
+                        "accessToken": access_b,
+                        "refreshToken": "refresh-b",
+                        "idToken": id_b,
+                        "accessTokenExpiresAt": future_exp,
+                        "idTokenExpiresAt": future_exp,
+                        "email": "b@example.com",
+                        "name": "Account B",
+                        "authProvider": "google",
+                        "planType": "plus",
+                        "chatgptUserId": "user-b",
+                        "lastRefresh": "2026-03-29T00:00:00Z"
+                    },
+                    "config": "model = \"provider-b\"\n"
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    write_codex_live_atomic(
+        &json!({
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": id_a_live,
+                "account_id": "acct-a",
+                "access_token": access_a_live,
+                "refresh_token": "refresh-a-live"
+            },
+            "last_refresh": "2026-04-12T00:00:00Z"
+        }),
+        Some("model = \"live-current\"\n"),
+    )
+    .expect("write live codex state");
+
+    ProviderService::switch(&state, AppType::Codex, "oauth-b")
+        .expect("switch to oauth-b should succeed");
+
+    let providers = state
+        .db
+        .get_all_providers(AppType::Codex.as_str())
+        .expect("read codex providers after switch");
+    let provider_a = providers.get("oauth-a").expect("oauth-a still exists");
+
+    assert_eq!(
+        provider_a
+            .settings_config
+            .pointer("/auth/tokens/access_token")
+            .and_then(|value| value.as_str()),
+        Some(access_a_live.as_str()),
+        "current live access token should be backfilled into provider auth snapshot"
+    );
+    assert_eq!(
+        provider_a
+            .settings_config
+            .pointer("/oauth/accessToken")
+            .and_then(|value| value.as_str()),
+        Some(access_a_live.as_str()),
+        "oauth metadata should keep the refreshed live access token"
+    );
+    assert_eq!(
+        provider_a
+            .settings_config
+            .pointer("/oauth/refreshToken")
+            .and_then(|value| value.as_str()),
+        Some("refresh-a-live"),
+        "oauth metadata should keep the refreshed live refresh token"
+    );
+    assert_eq!(
+        provider_a
+            .settings_config
+            .pointer("/oauth/planType")
+            .and_then(|value| value.as_str()),
+        Some("pro"),
+        "oauth metadata should be rebuilt from the live auth snapshot"
+    );
+    assert_eq!(
+        provider_a
+            .settings_config
+            .get("config")
+            .and_then(|value| value.as_str()),
+        Some("model = \"provider-a\"\n"),
+        "oauth account switch should not overwrite provider-local config from live config.toml"
+    );
+
+    let auth_value: serde_json::Value =
+        read_json_file(&get_codex_auth_path()).expect("read switched auth.json");
+    assert_eq!(
+        auth_value
+            .get("tokens")
+            .and_then(|tokens| tokens.get("account_id"))
+            .and_then(|value| value.as_str()),
+        Some("acct-b"),
+        "target oauth account should become active in live auth.json"
     );
 }
