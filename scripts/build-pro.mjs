@@ -4,14 +4,14 @@ import path from "node:path";
 
 const env = {
   ...process.env,
-  CCSWITCH_APP_DISPLAY_NAME: "CCswitch Pro",
-  CCSWITCH_APP_CONFIG_DIR_NAME: ".ccswitch-pro",
-  CCSWITCH_DEEPLINK_SCHEME: "ccswitchpro",
-  CCSWITCH_WEBDAV_REMOTE_ROOT: "ccswitch-pro-sync",
-  VITE_APP_DISPLAY_NAME: "CCswitch Pro",
-  VITE_APP_CONFIG_DIR_NAME: ".ccswitch-pro",
-  VITE_APP_DEEPLINK_SCHEME: "ccswitchpro",
-  VITE_APP_STORAGE_PREFIX: "ccswitch-pro",
+  CCSWITCH_APP_DISPLAY_NAME: "TermPilot Studio",
+  CCSWITCH_APP_CONFIG_DIR_NAME: ".termpilot-studio",
+  CCSWITCH_DEEPLINK_SCHEME: "termpilotstudio",
+  CCSWITCH_WEBDAV_REMOTE_ROOT: "termpilot-studio-sync",
+  VITE_APP_DISPLAY_NAME: "TermPilot Studio",
+  VITE_APP_CONFIG_DIR_NAME: ".termpilot-studio",
+  VITE_APP_DEEPLINK_SCHEME: "termpilotstudio",
+  VITE_APP_STORAGE_PREFIX: "termpilot-studio",
 };
 
 const rootDir = path.resolve(import.meta.dirname, "..");

@@ -30,6 +30,7 @@ DEFAULT_LOG_LIMIT = 10
 MAX_LOG_LIMIT = 50
 SUPPORTED_APPS = ("claude", "codex")
 SUPPORTED_MONITORS = ("none", "pane")
+SUPPORTED_AGENT_MODES = ("inline", "background", "pane")
 FINISHED_STATUSES = {"succeeded", "failed", "timed_out", "cancelled"}
 CALLBACK_TAG = "MAIN_AGENT_CALLBACK"
 CALLBACK_BLOCK_RE = re.compile(
@@ -47,9 +48,41 @@ class DispatchError(RuntimeError):
     pass
 
 
+def detect_entrypoint() -> str:
+    override = os.environ.get("CCSWITCH_AGENT_ENTRYPOINT", "").strip().lower()
+    if override:
+        return override
+    stem = Path(__file__).stem.strip().lower()
+    if stem == "agent":
+        return "agent"
+    return "dispatch"
+
+
+ENTRYPOINT = detect_entrypoint()
+IS_AGENT_ENTRYPOINT = ENTRYPOINT == "agent"
+
+
 @dataclass
 class ProvidersCommand:
     app: Optional[str]
+
+
+@dataclass
+class AgentPlanCommand:
+    task: str
+    policy: Optional[str]
+    target: Optional[str]
+    mode: Optional[str]
+
+
+@dataclass
+class AgentRunCommand:
+    task: str
+    policy: Optional[str]
+    target: Optional[str]
+    mode: str
+    timeout_seconds: int
+    wait_for_completion: bool
 
 
 @dataclass
@@ -103,6 +136,8 @@ class RunCommand:
 
 Command = Union[
     ProvidersCommand,
+    AgentPlanCommand,
+    AgentRunCommand,
     StatusCommand,
     LastCommand,
     LogsCommand,
@@ -117,7 +152,7 @@ Command = Union[
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Invoke the cc-switch dispatch loopback API.",
+        description="Invoke the local agent runtime loopback API.",
     )
     parser.add_argument(
         "--cwd",
@@ -140,6 +175,18 @@ def load_raw_arguments(raw_arguments: Optional[str]) -> str:
 
 
 def usage_lines() -> list[str]:
+    if IS_AGENT_ENTRYPOINT:
+        return [
+            "- agent plan --task \"...\" [--policy <name>] [--target <app:provider>] [--mode pane|background|inline]",
+            "- agent run --task \"...\" [--policy <name>] [--target <app:provider>] [--mode pane|background|inline] [--timeout <seconds>] [--wait]",
+            "- agent list [count]",
+            "- agent show <run_id>",
+            "- agent watch <run_id>",
+            "- agent attach <run_id>",
+            "- agent cancel <run_id>",
+            "- agent providers [app]",
+            "- agent status",
+        ]
     return [
         "- /dispatch-task providers [app]",
         "- /dispatch-task status",
@@ -184,6 +231,9 @@ def parse_command(raw: str) -> Command:
     tokens = shlex.split(raw)
     if not tokens:
         raise DispatchError(usage_error("Missing dispatch arguments."))
+
+    if IS_AGENT_ENTRYPOINT:
+        return parse_agent_command(tokens)
 
     head = tokens[0].strip().lower()
     if head == "providers":
@@ -319,6 +369,137 @@ def parse_command(raw: str) -> Command:
     )
 
 
+def parse_agent_command(tokens: list[str]) -> Command:
+    head = tokens[0].strip().lower()
+
+    if head == "status":
+        if len(tokens) != 1:
+            raise DispatchError("`status` does not accept extra arguments.")
+        return StatusCommand()
+
+    if head == "providers":
+        if len(tokens) > 2:
+            raise DispatchError("`providers` accepts at most one optional app filter.")
+        app = None
+        if len(tokens) == 2:
+            app = tokens[1].strip().lower()
+            if app not in SUPPORTED_APPS:
+                raise DispatchError(
+                    "Unknown app filter '{}'. Expected one of: {}.".format(
+                        tokens[1], ", ".join(SUPPORTED_APPS)
+                    )
+                )
+        return ProvidersCommand(app=app)
+
+    if head == "list":
+        if len(tokens) > 2:
+            raise DispatchError("`list` accepts at most one optional numeric count.")
+        return ListCommand(
+            limit=parse_limit_token(tokens[1]) if len(tokens) == 2 else DEFAULT_LOG_LIMIT
+        )
+
+    if head in {"show", "watch", "attach", "cancel"}:
+        if len(tokens) != 2:
+            raise DispatchError("`{}` requires exactly one run id.".format(head))
+        run_id = tokens[1].strip()
+        if not run_id:
+            raise DispatchError("Run id cannot be empty.")
+        if head == "show":
+            return ShowCommand(run_id=run_id)
+        if head in {"watch", "attach"}:
+            return WatchCommand(run_id=run_id)
+        return CancelCommand(run_id=run_id)
+
+    if head == "plan":
+        return parse_agent_plan_or_run(tokens[1:], run=False)
+    if head == "run":
+        return parse_agent_plan_or_run(tokens[1:], run=True)
+
+    raise DispatchError(
+        usage_error(
+            "Unknown agent subcommand '{}'. Expected one of: plan, run, list, show, watch, attach, cancel, providers, status.".format(
+                head
+            )
+        )
+    )
+
+
+def parse_agent_plan_or_run(tokens: list[str], run: bool) -> Command:
+    task: Optional[str] = None
+    policy: Optional[str] = None
+    target: Optional[str] = None
+    mode: Optional[str] = None
+    timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+    wait_for_completion = False
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i].strip()
+        if token in {"--task", "-t"}:
+            i += 1
+            if i >= len(tokens):
+                raise DispatchError("`--task` requires a value.")
+            task = tokens[i].strip()
+        elif token == "--policy":
+            i += 1
+            if i >= len(tokens):
+                raise DispatchError("`--policy` requires a value.")
+            policy = tokens[i].strip() or None
+        elif token == "--target":
+            i += 1
+            if i >= len(tokens):
+                raise DispatchError("`--target` requires a value.")
+            target = tokens[i].strip() or None
+        elif token == "--mode":
+            i += 1
+            if i >= len(tokens):
+                raise DispatchError("`--mode` requires a value.")
+            mode = tokens[i].strip().lower()
+            if mode not in SUPPORTED_AGENT_MODES:
+                raise DispatchError(
+                    "Unsupported mode '{}'. Expected one of: {}.".format(
+                        mode, ", ".join(SUPPORTED_AGENT_MODES)
+                    )
+                )
+        elif token == "--timeout":
+            i += 1
+            if i >= len(tokens):
+                raise DispatchError("`--timeout` requires a value.")
+            try:
+                timeout_seconds = int(tokens[i], 10)
+            except ValueError as exc:
+                raise DispatchError("`--timeout` must be an integer number of seconds.") from exc
+            if timeout_seconds < 1 or timeout_seconds > MAX_TIMEOUT_SECONDS:
+                raise DispatchError(
+                    "`--timeout` must be between 1 and {} seconds.".format(
+                        MAX_TIMEOUT_SECONDS
+                    )
+                )
+        elif token == "--wait":
+            wait_for_completion = True
+        else:
+            raise DispatchError("Unexpected argument '{}'.".format(token))
+        i += 1
+
+    if not task:
+        raise DispatchError("`--task` is required.")
+
+    if run:
+        resolved_mode = mode or "background"
+        if wait_for_completion and resolved_mode == "pane":
+            raise DispatchError("`--wait` cannot be combined with `--mode pane`.")
+        return AgentRunCommand(
+            task=task,
+            policy=policy,
+            target=target,
+            mode=resolved_mode,
+            timeout_seconds=timeout_seconds,
+            wait_for_completion=wait_for_completion,
+        )
+
+    return AgentPlanCommand(task=task, policy=policy, target=target, mode=mode)
+
+
 def parse_target(target: str) -> tuple[str, str]:
     app, separator, provider_selector = target.partition(":")
     app = app.strip().lower()
@@ -341,8 +522,8 @@ def parse_target(target: str) -> tuple[str, str]:
 def load_discovery() -> dict[str, Any]:
     if not DISCOVERY_PATH.exists():
         raise DispatchError(
-            "cc-switch dispatch service was not found.\n\n"
-            "Start the cc-switch desktop app, then try again."
+            "Local agent runtime service was not found.\n\n"
+            "Start the desktop app, then try again."
         )
 
     try:
@@ -358,7 +539,7 @@ def load_discovery() -> dict[str, Any]:
 
     if not payload.get("baseUrl") or not payload.get("token"):
         raise DispatchError(
-            "{} is missing required fields. Restart cc-switch and try again.".format(
+            "{} is missing required fields. Restart the desktop app and try again.".format(
                 DISCOVERY_PATH
             )
         )
@@ -413,7 +594,7 @@ def request_json_with_credentials(
         raise DispatchError(extract_api_error(body, exc.reason)) from exc
     except urllib.error.URLError as exc:
         raise DispatchError(
-            "Unable to reach cc-switch dispatch service at {}.\n\n"
+            "Unable to reach the local agent runtime service at {}.\n\n"
             "Make sure the desktop app is still running.".format(base_url)
         ) from exc
 
@@ -539,6 +720,32 @@ def request_bridge_prepare(
     return response
 
 
+def request_agent_plan(discovery: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    response = request_json(
+        discovery,
+        "POST",
+        "/v1/agent/plan",
+        payload=payload,
+        timeout_seconds=30,
+    )
+    if not isinstance(response, dict):
+        raise DispatchError("Agent service returned an invalid plan payload.")
+    return response
+
+
+def request_agent_run(discovery: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    response = request_json(
+        discovery,
+        "POST",
+        "/v1/agent/run",
+        payload=payload,
+        timeout_seconds=max(int(payload.get("timeoutSeconds") or 30) + 15, 30),
+    )
+    if not isinstance(response, dict):
+        raise DispatchError("Agent service returned an invalid run payload.")
+    return response
+
+
 def request_bridge_started(spec: dict[str, Any], pane_id: str) -> dict[str, Any]:
     response = request_json_with_credentials(
         str(spec["baseUrl"]),
@@ -628,19 +835,27 @@ def short_run_id(run_id: str) -> str:
     return run_id[:8] if run_id else "legacy"
 
 
+def command_prefix() -> str:
+    return "agent" if IS_AGENT_ENTRYPOINT else "/dispatch-task"
+
+
+def noun_prefix() -> str:
+    return "Agent" if IS_AGENT_ENTRYPOINT else "Dispatch"
+
+
 def render_providers(payload: dict[str, Any], app_filter: Optional[str]) -> str:
     providers = payload.get("providers")
     if not isinstance(providers, list):
         raise DispatchError("Dispatch service returned an invalid providers payload.")
 
-    title = "## Dispatch Providers"
+    title = "## {} Providers".format(noun_prefix())
     if app_filter:
         title += " (`{}`)".format(app_filter)
 
     lines = [title, ""]
 
     if not providers:
-        lines.append("- No dispatchable providers found in cc-switch.")
+        lines.append("- No dispatchable providers found in the local runtime.")
         lines.append("- Supported apps in v1: `claude`, `codex`.")
     else:
         for item in providers:
@@ -664,7 +879,7 @@ def render_status_from_api(discovery: dict[str, Any]) -> str:
         run for run in runs if str(run.get("status") or "").strip() in FINISHED_STATUSES
     ]
 
-    lines = ["## Dispatch Status", ""]
+    lines = ["## {} Status".format(noun_prefix()), ""]
     lines.append("- State: `{}`".format("running" if running else "idle"))
     if running:
         lines.append("- Active runs: `{}`".format(len(running)))
@@ -693,7 +908,7 @@ def render_status_fallback() -> str:
     history_entry = load_history_entries(1)
     last_entry = history_entry[0] if history_entry else None
 
-    lines = ["## Dispatch Status", ""]
+    lines = ["## {} Status".format(noun_prefix()), ""]
     if not snapshot and not last_entry:
         lines.append("- State: `idle`")
         lines.append("- No dispatch activity has been recorded yet.")
@@ -747,14 +962,14 @@ def latest_finished_run(discovery: dict[str, Any]) -> Optional[dict[str, Any]]:
 def render_last(discovery: dict[str, Any]) -> str:
     record = latest_finished_run(discovery)
     if not record:
-        return "## Dispatch Last Run\n\n- No dispatch history is available yet."
-    return render_record("Dispatch Last Run", record)
+        return "## {} Last Run\n\n- No run history is available yet.".format(noun_prefix())
+    return render_record("{} Last Run".format(noun_prefix()), record)
 
 
 def render_logs(discovery: dict[str, Any], limit: int) -> str:
     entries = request_runs(discovery, limit=limit)
     lines = [
-        "## Dispatch Logs",
+        "## {} Logs".format(noun_prefix()),
         "",
         "- Showing the newest `{}` entr{}.".format(limit, "y" if limit == 1 else "ies"),
     ]
@@ -785,7 +1000,7 @@ def render_logs(discovery: dict[str, Any], limit: int) -> str:
 
 def render_list(discovery: dict[str, Any], limit: int) -> str:
     entries = request_runs(discovery, limit=limit)
-    lines = ["## Dispatch Runs", ""]
+    lines = ["## {} Runs".format(noun_prefix()), ""]
     if not entries:
         lines.append("- No dispatch runs are available yet.")
         return "\n".join(lines)
@@ -878,7 +1093,53 @@ def fenced_block(text: str) -> str:
 
 
 def render_failure(message: str) -> str:
-    return "## Dispatch Error\n\n- Error: {}".format(message.strip())
+    return "## {} Error\n\n- Error: {}".format(noun_prefix(), message.strip())
+
+
+def render_agent_plan(record: dict[str, Any]) -> str:
+    plan = record.get("plan")
+    if not isinstance(plan, dict):
+        raise DispatchError("Agent service returned an invalid plan payload.")
+
+    lines = [
+        "## Agent Plan",
+        "",
+        "- Route policy: `{}`".format(plan.get("routePolicy") or "suggested-execution"),
+        "- Task kind: `{}`".format(plan.get("taskKind") or "general"),
+        "- Reasoning level: `{}`".format(plan.get("reasoningLevel") or "medium"),
+        "- Cost tier: `{}`".format(plan.get("costTier") or "balanced"),
+        "- Preferred runtime: `{}`".format(plan.get("preferredRuntime") or "background"),
+        "- Recommended target: `{}`".format(plan.get("recommendedTarget") or "unknown"),
+        "- Recommended provider: `{}`".format(
+            plan.get("recommendedProviderName") or "unknown"
+        ),
+    ]
+
+    fallback_chain = plan.get("fallbackChain")
+    if isinstance(fallback_chain, list) and fallback_chain:
+        lines.append(
+            "- Fallback chain: {}".format(
+                ", ".join("`{}`".format(item) for item in fallback_chain if item)
+            )
+        )
+
+    explanation = str(plan.get("explanation") or "").strip()
+    if explanation:
+        lines.extend(["", explanation])
+
+    lines.extend(
+        [
+            "",
+            "Run with:",
+            "```text",
+            "agent run --task {} --mode {}".format(
+                shlex.quote(str(record.get("task") or "")),
+                plan.get("preferredRuntime") or "background",
+            ),
+            "```",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def render_started(
@@ -888,7 +1149,7 @@ def render_started(
 ) -> str:
     state = str(record.get("state") or "queued")
     lines = [
-        "## Dispatch Started",
+        "## {} Started".format(noun_prefix()),
         "",
         "- State: `{}`".format(state),
         "- Run ID: `{}`".format(record.get("runId") or "unknown"),
@@ -903,8 +1164,11 @@ def render_started(
     lines.extend(
         [
             "",
-            "Use `/dispatch-task watch {}` or `/dispatch-task show {}` to inspect this run.".format(
-                record.get("runId") or "run_id", record.get("runId") or "run_id"
+            "Use `{} watch {}` or `{} show {}` to inspect this run.".format(
+                command_prefix(),
+                record.get("runId") or "run_id",
+                command_prefix(),
+                record.get("runId") or "run_id",
             ),
         ]
     )
@@ -1210,7 +1474,9 @@ def render_watch_screen(record: dict[str, Any]) -> str:
     callback = parse_callback_block(result)
 
     top_lines = [
-        "Dispatch Monitor  [{}]".format(short_run_id(str(record.get("runId") or ""))),
+        "{} Monitor  [{}]".format(
+            noun_prefix(), short_run_id(str(record.get("runId") or ""))
+        ),
         "Status: {}    Target: {}    Provider: {}".format(
             status, record.get("target") or "unknown", record.get("providerName") or "unknown"
         ),
@@ -1288,6 +1554,90 @@ def main() -> int:
             return run_bridge_pane(command.spec_path)
 
         discovery = load_discovery()
+
+        if isinstance(command, AgentPlanCommand):
+            payload = request_agent_plan(
+                discovery,
+                {
+                    "task": command.task,
+                    "cwd": arguments.cwd,
+                    "policy": command.policy,
+                    "target": command.target,
+                    "mode": command.mode,
+                },
+            )
+            print(render_agent_plan(payload))
+            return 0
+
+        if isinstance(command, AgentRunCommand):
+            if command.mode == "pane":
+                tmux = ensure_tmux_ready()
+                claude_pane = current_tmux_pane(tmux)
+                plan_payload = request_agent_plan(
+                    discovery,
+                    {
+                        "task": command.task,
+                        "cwd": arguments.cwd,
+                        "policy": command.policy,
+                        "target": command.target,
+                        "mode": command.mode,
+                    },
+                )
+                plan = plan_payload.get("plan")
+                if not isinstance(plan, dict):
+                    raise DispatchError("Agent service returned an invalid plan payload.")
+                recommended_target = str(plan.get("recommendedTarget") or "").strip()
+                if not recommended_target:
+                    raise DispatchError("Agent service did not return a recommended target.")
+                if recommended_target.split(":", 1)[0] != "codex":
+                    raise DispatchError("pane runtime currently requires a codex target")
+                payload = request_bridge_prepare(
+                    discovery,
+                    {
+                        "target": recommended_target,
+                        "task": command.task,
+                        "timeoutSeconds": command.timeout_seconds,
+                        "cwd": arguments.cwd,
+                        "callbackPane": claude_pane,
+                        "callbackMode": "auto",
+                        "hostApp": "claude",
+                        "routePolicy": plan.get("routePolicy"),
+                        "taskKind": plan.get("taskKind"),
+                        "reasoningLevel": plan.get("reasoningLevel"),
+                    },
+                )
+                spec_path = str(payload.get("specPath") or "").strip()
+                if not spec_path:
+                    raise DispatchError("Agent service did not return a bridge spec path.")
+                pane_id = launch_tmux_bridge(
+                    tmux,
+                    arguments.cwd,
+                    str(payload.get("runId") or ""),
+                    spec_path,
+                )
+                print(render_started(payload, pane_id=pane_id, pane_label="Bridge pane"))
+                return 0
+
+            payload = request_agent_run(
+                discovery,
+                {
+                    "task": command.task,
+                    "cwd": arguments.cwd,
+                    "policy": command.policy,
+                    "target": command.target,
+                    "mode": command.mode,
+                    "timeoutSeconds": command.timeout_seconds,
+                    "waitForCompletion": command.wait_for_completion,
+                },
+            )
+            run_payload = payload.get("run")
+            if not isinstance(run_payload, dict):
+                raise DispatchError("Agent service returned an invalid run payload.")
+            if payload.get("completed"):
+                print(render_record("Agent Result", run_payload))
+                return 0
+            print(render_started(run_payload))
+            return 0
 
         if isinstance(command, LastCommand):
             print(render_last(discovery))

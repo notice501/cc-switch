@@ -33,6 +33,9 @@ const DISCOVERY_FILE_NAME: &str = "dispatch-api.json";
 const STATUS_FILE_NAME: &str = "dispatch-status.json";
 const MAIN_AGENT_CALLBACK_TAG: &str = "MAIN_AGENT_CALLBACK";
 const MAX_STORED_OUTPUT_CHARS: i64 = 120_000;
+const AGENT_RUNTIME_BACKGROUND: &str = "background";
+const AGENT_RUNTIME_INLINE: &str = "inline";
+const AGENT_RUNTIME_PANE: &str = "pane";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +76,25 @@ struct DispatchProvidersResponse {
 #[serde(rename_all = "camelCase")]
 struct DispatchRunsResponse {
     runs: Vec<DispatchRunRecord>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentPlanResponse {
+    accepted: bool,
+    task: String,
+    cwd: String,
+    plan: AgentPlan,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunResponse {
+    accepted: bool,
+    completed: bool,
+    run: DispatchRunResponse,
+    plan: AgentPlan,
+    legacy_command_hint: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -118,6 +140,11 @@ struct DispatchRunRequest {
     timeout_seconds: Option<u64>,
     cwd: Option<String>,
     wait_for_completion: Option<bool>,
+    route_policy: Option<String>,
+    task_kind: Option<String>,
+    reasoning_level: Option<String>,
+    runtime_mode: Option<String>,
+    callback_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,6 +157,31 @@ struct DispatchBridgePrepareRequest {
     callback_pane: String,
     callback_mode: Option<String>,
     host_app: Option<String>,
+    route_policy: Option<String>,
+    task_kind: Option<String>,
+    reasoning_level: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentPlanRequest {
+    task: String,
+    cwd: Option<String>,
+    policy: Option<String>,
+    target: Option<String>,
+    mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunRequest {
+    task: String,
+    cwd: Option<String>,
+    policy: Option<String>,
+    target: Option<String>,
+    mode: Option<String>,
+    timeout_seconds: Option<u64>,
+    wait_for_completion: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,11 +309,16 @@ pub struct DispatchStatusRun {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DispatchRunRecord {
+pub struct DispatchRunRecord {
     run_id: String,
     target: String,
     provider_name: String,
     host_app: String,
+    route_policy: String,
+    task_kind: String,
+    reasoning_level: String,
+    runtime_mode: String,
+    callback_mode: String,
     cwd: String,
     task_preview: String,
     status: String,
@@ -296,6 +353,20 @@ struct DispatchBridgeLaunchSpec {
     env_remove: Vec<String>,
     path_prefix: Option<String>,
     last_message_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPlan {
+    route_policy: String,
+    task_kind: String,
+    reasoning_level: String,
+    cost_tier: String,
+    preferred_runtime: String,
+    recommended_target: String,
+    recommended_provider_name: String,
+    fallback_chain: Vec<String>,
+    explanation: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,6 +422,12 @@ pub fn start(db: Arc<Database>) -> Result<DispatchDiscovery, AppError> {
 
     let router = Router::new()
         .route("/health", get(health_check))
+        .route("/v1/agent/plan", post(plan_agent))
+        .route("/v1/agent/run", post(run_agent))
+        .route("/v1/agent/runs", get(list_dispatch_runs))
+        .route("/v1/agent/runs/:run_id", get(get_dispatch_run))
+        .route("/v1/agent/runs/:run_id/cancel", post(cancel_dispatch_run))
+        .route("/v1/agent/providers", get(list_dispatch_providers))
         .route("/v1/dispatch/providers", get(list_dispatch_providers))
         .route("/v1/dispatch/run", post(run_dispatch))
         .route("/v1/dispatch/bridge", post(prepare_bridge_dispatch))
@@ -427,6 +504,106 @@ async fn list_dispatch_providers(
     Ok(Json(DispatchProvidersResponse { providers }))
 }
 
+async fn plan_agent(
+    State(state): State<DispatchApiState>,
+    headers: HeaderMap,
+    Json(request): Json<AgentPlanRequest>,
+) -> Result<Json<AgentPlanResponse>, (StatusCode, Json<ApiErrorResponse>)> {
+    authorize(&headers, state.token.as_str())?;
+
+    let task = request.task.trim().to_string();
+    if task.is_empty() {
+        return Err(bad_request("Task content cannot be empty"));
+    }
+
+    let cwd = normalize_cwd(request.cwd.as_deref())?;
+    let providers = collect_dispatch_providers(&state.db, None).map_err(internal_error)?;
+    let plan = build_agent_plan(
+        &providers,
+        &task,
+        request.policy.as_deref(),
+        request.target.as_deref(),
+        request.mode.as_deref(),
+    )
+    .map_err(internal_error)?;
+
+    Ok(Json(AgentPlanResponse {
+        accepted: true,
+        task,
+        cwd: cwd.display().to_string(),
+        plan,
+    }))
+}
+
+async fn run_agent(
+    State(state): State<DispatchApiState>,
+    headers: HeaderMap,
+    Json(request): Json<AgentRunRequest>,
+) -> Result<Json<AgentRunResponse>, (StatusCode, Json<ApiErrorResponse>)> {
+    authorize(&headers, state.token.as_str())?;
+
+    let task = request.task.trim().to_string();
+    if task.is_empty() {
+        return Err(bad_request("Task content cannot be empty"));
+    }
+
+    let cwd = normalize_cwd(request.cwd.as_deref())?;
+    let cwd_display = cwd.display().to_string();
+    let timeout_seconds = normalize_timeout(request.timeout_seconds);
+    let wait_for_completion = request.wait_for_completion.unwrap_or(false);
+    let providers = collect_dispatch_providers(&state.db, None).map_err(internal_error)?;
+    let plan = build_agent_plan(
+        &providers,
+        &task,
+        request.policy.as_deref(),
+        request.target.as_deref(),
+        request.mode.as_deref(),
+    )
+    .map_err(internal_error)?;
+
+    let dispatch_request = DispatchRunRequest {
+        target: plan.recommended_target.clone(),
+        task,
+        timeout_seconds: Some(timeout_seconds),
+        cwd: Some(cwd_display),
+        wait_for_completion: Some(wait_for_completion),
+        route_policy: Some(plan.route_policy.clone()),
+        task_kind: Some(plan.task_kind.clone()),
+        reasoning_level: Some(plan.reasoning_level.clone()),
+        runtime_mode: Some(plan.preferred_runtime.clone()),
+        callback_mode: Some(
+            if plan.preferred_runtime == AGENT_RUNTIME_PANE {
+                "auto"
+            } else {
+                "manual"
+            }
+            .to_string(),
+        ),
+    };
+
+    let Json(run) = run_dispatch(State(state), headers, Json(dispatch_request)).await?;
+    let legacy_command_hint = format!(
+        "/dispatch-task {} timeout={}{} -- <task text>",
+        plan.recommended_target,
+        timeout_seconds,
+        if plan.preferred_runtime == AGENT_RUNTIME_PANE {
+            " monitor=pane"
+        } else if wait_for_completion {
+            " wait=true"
+        } else {
+            ""
+        }
+    );
+
+    Ok(Json(AgentRunResponse {
+        accepted: true,
+        completed: run.completed,
+        run,
+        plan,
+        legacy_command_hint,
+    }))
+}
+
 async fn run_dispatch(
     State(state): State<DispatchApiState>,
     headers: HeaderMap,
@@ -439,6 +616,11 @@ async fn run_dispatch(
     let timeout_seconds = normalize_timeout(request.timeout_seconds);
     let wait_for_completion = request.wait_for_completion.unwrap_or(false);
     let task = request.task.trim().to_string();
+    let route_policy = normalize_route_policy(request.route_policy.as_deref());
+    let task_kind = normalize_task_kind(request.task_kind.as_deref());
+    let reasoning_level = normalize_reasoning_level(request.reasoning_level.as_deref());
+    let runtime_mode = normalize_runtime_mode(request.runtime_mode.as_deref(), wait_for_completion)?;
+    let callback_mode = normalize_callback_mode_for_run(request.callback_mode.as_deref())?;
 
     if task.is_empty() {
         return Err(bad_request("Task content cannot be empty"));
@@ -464,6 +646,11 @@ async fn run_dispatch(
             target: request.target.clone(),
             provider_name: provider_name.clone(),
             host_app,
+            route_policy,
+            task_kind,
+            reasoning_level,
+            runtime_mode,
+            callback_mode,
             cwd: cwd_display.clone(),
             task_preview,
             status: "queued".to_string(),
@@ -550,6 +737,9 @@ async fn prepare_bridge_dispatch(
     let cwd = normalize_cwd(request.cwd.as_deref())?;
     let timeout_seconds = normalize_timeout(request.timeout_seconds);
     let task = request.task.trim().to_string();
+    let route_policy = normalize_route_policy(request.route_policy.as_deref());
+    let task_kind = normalize_task_kind(request.task_kind.as_deref());
+    let reasoning_level = normalize_reasoning_level(request.reasoning_level.as_deref());
     if task.is_empty() {
         return Err(bad_request("Task content cannot be empty"));
     }
@@ -574,6 +764,11 @@ async fn prepare_bridge_dispatch(
             target: request.target.clone(),
             provider_name: provider_name.clone(),
             host_app,
+            route_policy,
+            task_kind,
+            reasoning_level,
+            runtime_mode: AGENT_RUNTIME_PANE.to_string(),
+            callback_mode: callback_mode.to_string(),
             cwd: cwd_display.clone(),
             task_preview: truncate_preview(&task),
             status: "queued".to_string(),
@@ -1656,6 +1851,191 @@ fn parse_target(target: &str) -> Result<ParsedTarget, (StatusCode, Json<ApiError
     })
 }
 
+fn build_agent_plan(
+    providers: &[DispatchProviderTarget],
+    task: &str,
+    policy_hint: Option<&str>,
+    explicit_target: Option<&str>,
+    mode_hint: Option<&str>,
+) -> Result<AgentPlan, AppError> {
+    let task_kind = infer_task_kind(task, policy_hint);
+    let reasoning_level = infer_reasoning_level(&task_kind, task);
+    let cost_tier = infer_cost_tier(&task_kind, &reasoning_level);
+    let preferred_runtime = normalize_runtime_mode_hint(mode_hint, &task_kind);
+
+    let preferred_app = if let Some(target) = explicit_target {
+        parse_target(target)
+            .map_err(|_| AppError::Message(format!("Unknown explicit target '{target}'")))?
+            .app
+    } else if matches!(task_kind.as_str(), "implementation" | "testing") {
+        AppType::Codex
+    } else {
+        AppType::Claude
+    };
+
+    let candidates = ranked_agent_targets(
+        providers,
+        preferred_app,
+        explicit_target,
+        &task_kind,
+        &reasoning_level,
+    )?;
+    let primary = candidates
+        .first()
+        .cloned()
+        .ok_or_else(|| AppError::Message("No dispatchable providers are available for this task".to_string()))?;
+
+    let explanation = match task_kind.as_str() {
+        "architecture" => "This looks architecture-heavy, so the planner keeps Claude-style reasoning in the lead.".to_string(),
+        "implementation" => "This looks implementation-heavy, so the plan favors a Codex executor and a terminal-friendly runtime.".to_string(),
+        "testing" => "This reads like a testing or bug-fixing task, so the plan favors an execution-oriented child agent.".to_string(),
+        "documentation" => "This looks like documentation or summarization work, so the plan keeps the task on a reasoning-first agent.".to_string(),
+        _ => "This task stays on a balanced route because no stronger specialization was detected.".to_string(),
+    };
+
+    Ok(AgentPlan {
+        route_policy: normalize_route_policy(policy_hint),
+        task_kind,
+        reasoning_level,
+        cost_tier,
+        preferred_runtime,
+        recommended_target: primary.target.clone(),
+        recommended_provider_name: primary.provider_name.clone(),
+        fallback_chain: candidates.into_iter().skip(1).map(|item| item.target).collect(),
+        explanation,
+    })
+}
+
+fn ranked_agent_targets(
+    providers: &[DispatchProviderTarget],
+    preferred_app: AppType,
+    explicit_target: Option<&str>,
+    task_kind: &str,
+    reasoning_level: &str,
+) -> Result<Vec<DispatchProviderTarget>, AppError> {
+    if let Some(target) = explicit_target.map(str::trim).filter(|value| !value.is_empty()) {
+        let parsed = parse_target(target)
+            .map_err(|_| AppError::Message(format!("Unknown explicit target '{target}'")))?;
+        let exact = providers
+            .iter()
+            .find(|provider| provider.target == target || provider.canonical_target == format!("{}:{}", parsed.app.as_str(), parsed.provider_selector))
+            .cloned()
+            .ok_or_else(|| AppError::Message(format!("Target '{target}' is not dispatchable")))?;
+        let mut ranked = vec![exact.clone()];
+        ranked.extend(
+            providers
+                .iter()
+                .filter(|provider| provider.canonical_target != exact.canonical_target)
+                .filter(|provider| provider.app == parsed.app.as_str())
+                .cloned(),
+        );
+        return Ok(ranked);
+    }
+
+    let mut scored: Vec<(i32, DispatchProviderTarget)> = providers
+        .iter()
+        .filter(|provider| provider.app == preferred_app.as_str())
+        .cloned()
+        .map(|provider| {
+            let haystack = format!(
+                "{} {} {}",
+                provider.provider_name.to_lowercase(),
+                provider.provider_id.to_lowercase(),
+                provider.target.to_lowercase()
+            );
+            let mut score = if provider.current { 50 } else { 0 };
+            if reasoning_level == "high" && (haystack.contains("opus") || haystack.contains("sonnet")) {
+                score += 30;
+            }
+            if reasoning_level == "low" && (haystack.contains("mini") || haystack.contains("haiku") || haystack.contains("flash")) {
+                score += 25;
+            }
+            if task_kind == "implementation" && provider.app == "codex" {
+                score += 40;
+            }
+            if task_kind == "testing" && provider.app == "codex" {
+                score += 35;
+            }
+            if task_kind == "architecture" && provider.app == "claude" {
+                score += 40;
+            }
+            (score, provider)
+        })
+        .collect();
+
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.provider_name.cmp(&right.1.provider_name)));
+    let ranked: Vec<_> = scored.into_iter().map(|(_, provider)| provider).collect();
+    if ranked.is_empty() {
+        return Err(AppError::Message(format!(
+            "No dispatchable {} providers are available",
+            preferred_app.as_str()
+        )));
+    }
+    Ok(ranked)
+}
+
+fn infer_task_kind(task: &str, policy_hint: Option<&str>) -> String {
+    let hint = policy_hint.unwrap_or("").trim().to_lowercase();
+    if !hint.is_empty() {
+        return normalize_task_kind(Some(hint.as_str()));
+    }
+
+    let lower = task.to_lowercase();
+    if lower.contains("架构")
+        || lower.contains("方案")
+        || lower.contains("边界")
+        || lower.contains("plan")
+        || lower.contains("design")
+        || lower.contains("architecture")
+        || lower.contains("review")
+    {
+        "architecture".to_string()
+    } else if lower.contains("test")
+        || lower.contains("测试")
+        || lower.contains("fix")
+        || lower.contains("bug")
+        || lower.contains("回归")
+    {
+        "testing".to_string()
+    } else if lower.contains("doc")
+        || lower.contains("readme")
+        || lower.contains("文档")
+        || lower.contains("总结")
+        || lower.contains("summary")
+    {
+        "documentation".to_string()
+    } else if lower.contains("实现")
+        || lower.contains("代码")
+        || lower.contains("重构")
+        || lower.contains("refactor")
+        || lower.contains("implement")
+        || lower.contains("code")
+    {
+        "implementation".to_string()
+    } else {
+        "general".to_string()
+    }
+}
+
+fn infer_reasoning_level(task_kind: &str, task: &str) -> String {
+    let lower = task.to_lowercase();
+    if task_kind == "architecture" || lower.contains("复杂") || lower.contains("tradeoff") || lower.contains("风险") {
+        "high".to_string()
+    } else if task_kind == "implementation" || task_kind == "testing" {
+        "medium".to_string()
+    } else {
+        "low".to_string()
+    }
+}
+
+fn infer_cost_tier(task_kind: &str, reasoning_level: &str) -> String {
+    match (task_kind, reasoning_level) {
+        ("architecture", "high") => "premium".to_string(),
+        ("implementation", _) | ("testing", _) => "balanced".to_string(),
+        _ => "low".to_string(),
+    }
+}
+
 fn normalize_cwd(raw: Option<&str>) -> Result<PathBuf, (StatusCode, Json<ApiErrorResponse>)> {
     let cwd = match raw.map(str::trim).filter(|value| !value.is_empty()) {
         Some(value) => PathBuf::from(value),
@@ -1677,6 +2057,77 @@ fn normalize_timeout(timeout_seconds: Option<u64>) -> u64 {
     timeout_seconds
         .unwrap_or(DEFAULT_TIMEOUT_SECONDS)
         .clamp(1, MAX_TIMEOUT_SECONDS)
+}
+
+fn normalize_route_policy(raw: Option<&str>) -> String {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("suggested-execution")
+        .to_string()
+}
+
+fn normalize_task_kind(raw: Option<&str>) -> String {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some("architecture") | Some("architect") => "architecture".to_string(),
+        Some("implementation") | Some("implement") | Some("code") => "implementation".to_string(),
+        Some("testing") | Some("test") | Some("bugfix") => "testing".to_string(),
+        Some("documentation") | Some("docs") => "documentation".to_string(),
+        Some(value) => value.to_string(),
+        None => "general".to_string(),
+    }
+}
+
+fn normalize_reasoning_level(raw: Option<&str>) -> String {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some("high") => "high".to_string(),
+        Some("low") => "low".to_string(),
+        Some("medium") => "medium".to_string(),
+        Some(value) => value.to_string(),
+        None => "medium".to_string(),
+    }
+}
+
+fn normalize_runtime_mode_hint(raw: Option<&str>, task_kind: &str) -> String {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some("pane") => AGENT_RUNTIME_PANE.to_string(),
+        Some("inline") => AGENT_RUNTIME_INLINE.to_string(),
+        Some("background") => AGENT_RUNTIME_BACKGROUND.to_string(),
+        Some(value) => value.to_string(),
+        None if task_kind == "implementation" || task_kind == "testing" => {
+            AGENT_RUNTIME_PANE.to_string()
+        }
+        None => AGENT_RUNTIME_BACKGROUND.to_string(),
+    }
+}
+
+fn normalize_runtime_mode(
+    raw: Option<&str>,
+    wait_for_completion: bool,
+) -> Result<String, (StatusCode, Json<ApiErrorResponse>)> {
+    let mode = match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some("pane") => AGENT_RUNTIME_PANE.to_string(),
+        Some("inline") => AGENT_RUNTIME_INLINE.to_string(),
+        Some("background") => AGENT_RUNTIME_BACKGROUND.to_string(),
+        Some(other) => {
+            return Err(bad_request(format!(
+                "runtimeMode must be one of '{AGENT_RUNTIME_INLINE}', '{AGENT_RUNTIME_BACKGROUND}', or '{AGENT_RUNTIME_PANE}', got '{other}'"
+            )))
+        }
+        None if wait_for_completion => AGENT_RUNTIME_INLINE.to_string(),
+        None => AGENT_RUNTIME_BACKGROUND.to_string(),
+    };
+
+    if mode == AGENT_RUNTIME_PANE && wait_for_completion {
+        return Err(bad_request("pane runtime cannot be combined with waitForCompletion=true"));
+    }
+
+    Ok(mode)
+}
+
+fn normalize_callback_mode_for_run(
+    raw: Option<&str>,
+) -> Result<String, (StatusCode, Json<ApiErrorResponse>)> {
+    Ok(normalize_callback_mode(raw)?.to_string())
 }
 
 fn normalize_callback_mode(
@@ -1731,19 +2182,26 @@ fn insert_dispatch_run(db: &Arc<Database>, record: DispatchRunRecord) -> Result<
     let conn = crate::database::lock_conn!(db.conn);
     conn.execute(
         "INSERT INTO dispatch_runs (
-            run_id, target, provider_name, host_app, cwd, task_preview, status,
+            run_id, target, provider_name, host_app, route_policy, task_kind, reasoning_level,
+            runtime_mode, callback_mode, cwd, task_preview, status,
             timeout_seconds, started_at, updated_at, finished_at, exit_code, duration_ms,
             timed_out, cancelled, result_preview, result, stdout, stderr
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7,
             ?8, ?9, ?10, ?11, ?12, ?13,
-            ?14, ?15, ?16, ?17, ?18, ?19
+            ?14, ?15, ?16, ?17, ?18, ?19,
+            ?20, ?21, ?22, ?23, ?24
         )",
         params![
             record.run_id,
             record.target,
             record.provider_name,
             record.host_app,
+            record.route_policy,
+            record.task_kind,
+            record.reasoning_level,
+            record.runtime_mode,
+            record.callback_mode,
             record.cwd,
             record.task_preview,
             record.status,
@@ -1882,7 +2340,8 @@ fn load_dispatch_runs(
     let conn = crate::database::lock_conn!(db.conn);
     let order_sql = "ORDER BY CASE WHEN status IN ('running','queued') THEN 0 ELSE 1 END, started_at DESC";
     let base_sql = "SELECT
-            run_id, target, provider_name, host_app, cwd, task_preview, status,
+            run_id, target, provider_name, host_app, route_policy, task_kind, reasoning_level,
+            runtime_mode, callback_mode, cwd, task_preview, status,
             timeout_seconds, started_at, updated_at, finished_at, exit_code, duration_ms,
             timed_out, cancelled, result_preview, result, stdout, stderr
          FROM dispatch_runs";
@@ -1918,7 +2377,8 @@ fn load_dispatch_run(db: &Arc<Database>, run_id: &str) -> Result<Option<Dispatch
     let conn = crate::database::lock_conn!(db.conn);
     conn.query_row(
         "SELECT
-            run_id, target, provider_name, host_app, cwd, task_preview, status,
+            run_id, target, provider_name, host_app, route_policy, task_kind, reasoning_level,
+            runtime_mode, callback_mode, cwd, task_preview, status,
             timeout_seconds, started_at, updated_at, finished_at, exit_code, duration_ms,
             timed_out, cancelled, result_preview, result, stdout, stderr
          FROM dispatch_runs
@@ -2020,21 +2480,26 @@ fn dispatch_run_from_row(row: &Row<'_>) -> rusqlite::Result<DispatchRunRecord> {
         target: row.get(1)?,
         provider_name: row.get(2)?,
         host_app: row.get(3)?,
-        cwd: row.get(4)?,
-        task_preview: row.get(5)?,
-        status: row.get(6)?,
-        timeout_seconds: row.get::<_, i64>(7)? as u64,
-        started_at: row.get(8)?,
-        updated_at: row.get(9)?,
-        finished_at: row.get(10)?,
-        exit_code: row.get(11)?,
-        duration_ms: row.get::<_, Option<i64>>(12)?.map(|value| value as u64),
-        timed_out: row.get::<_, i64>(13)? != 0,
-        cancelled: row.get::<_, i64>(14)? != 0,
-        result_preview: row.get(15)?,
-        result: row.get(16)?,
-        stdout: row.get(17)?,
-        stderr: row.get(18)?,
+        route_policy: row.get(4)?,
+        task_kind: row.get(5)?,
+        reasoning_level: row.get(6)?,
+        runtime_mode: row.get(7)?,
+        callback_mode: row.get(8)?,
+        cwd: row.get(9)?,
+        task_preview: row.get(10)?,
+        status: row.get(11)?,
+        timeout_seconds: row.get::<_, i64>(12)? as u64,
+        started_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        finished_at: row.get(15)?,
+        exit_code: row.get(16)?,
+        duration_ms: row.get::<_, Option<i64>>(17)?.map(|value| value as u64),
+        timed_out: row.get::<_, i64>(18)? != 0,
+        cancelled: row.get::<_, i64>(19)? != 0,
+        result_preview: row.get(20)?,
+        result: row.get(21)?,
+        stdout: row.get(22)?,
+        stderr: row.get(23)?,
     })
 }
 
@@ -2107,6 +2572,21 @@ pub fn read_status_snapshot() -> Result<DispatchStatusSnapshot, AppError> {
     let raw = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
     serde_json::from_str(&raw)
         .map_err(|e| AppError::Message(format!("解析 Dispatch 状态文件失败: {e}")))
+}
+
+pub fn read_recent_runs(db: &Arc<Database>, limit: usize) -> Result<Vec<DispatchRunRecord>, AppError> {
+    load_dispatch_runs(db, limit.clamp(1, 50), None)
+}
+
+pub fn plan_agent_task(
+    db: &Arc<Database>,
+    task: &str,
+    policy: Option<&str>,
+    target: Option<&str>,
+    mode: Option<&str>,
+) -> Result<AgentPlan, AppError> {
+    let providers = collect_dispatch_providers(db, None)?;
+    build_agent_plan(&providers, task, policy, target, mode)
 }
 
 fn load_last_history_summary() -> Option<DispatchStatusRun> {

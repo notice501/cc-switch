@@ -21,6 +21,7 @@ import {
   KeyRound,
   Shield,
   Cpu,
+  Bot,
 } from "lucide-react";
 import type { Provider, VisibleApps } from "@/types";
 import type { EnvConflict } from "@/types/env";
@@ -932,7 +933,7 @@ function App() {
               <div className="flex items-center gap-2">
                 <div className="relative inline-flex items-center">
                   <a
-                    href="https://github.com/farion1231/cc-switch"
+                    href="https://github.com/notice501/cc-switch"
                     target="_blank"
                     rel="noreferrer"
                     className={cn(
@@ -1202,6 +1203,15 @@ function App() {
                                 title={t("prompts.manage")}
                               >
                                 <Book className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setCurrentView("agents")}
+                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                                title="Agent Runtime"
+                              >
+                                <Bot className="w-4 h-4" />
                               </Button>
                               <Button
                                 variant="ghost"

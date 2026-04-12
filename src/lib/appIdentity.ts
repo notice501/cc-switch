@@ -1,7 +1,7 @@
-const DEFAULT_APP_DISPLAY_NAME = "CC Switch";
-const DEFAULT_APP_CONFIG_DIR_NAME = ".cc-switch";
-const DEFAULT_DEEPLINK_SCHEME = "ccswitch";
-const DEFAULT_STORAGE_PREFIX = "cc-switch";
+const DEFAULT_APP_DISPLAY_NAME = "TermPilot";
+const DEFAULT_APP_CONFIG_DIR_NAME = ".termpilot";
+const DEFAULT_DEEPLINK_SCHEME = "termpilot";
+const DEFAULT_STORAGE_PREFIX = "termpilot";
 
 export const APP_DISPLAY_NAME =
   import.meta.env.VITE_APP_DISPLAY_NAME ?? DEFAULT_APP_DISPLAY_NAME;

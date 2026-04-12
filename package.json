@@ -1,7 +1,7 @@
 {
-  "name": "cc-switch",
+  "name": "termpilot",
   "version": "3.12.3",
-  "description": "All-in-One Assistant for Claude Code, Codex & Gemini CLI",
+  "description": "Terminal-first agent runtime for Claude Code and Codex",
   "type": "module",
   "scripts": {
     "dev": "pnpm tauri dev",

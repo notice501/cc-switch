@@ -1,14 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CCswitch Pro",
-  "identifier": "com.ccswitch.desktop.pro",
+  "productName": "TermPilot Studio",
+  "identifier": "com.termpilot.desktop.studio",
   "bundle": {
     "createUpdaterArtifacts": false
   },
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["ccswitchpro"]
+        "schemes": ["termpilotstudio"]
       }
     }
   }

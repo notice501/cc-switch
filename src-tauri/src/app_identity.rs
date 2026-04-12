@@ -1,9 +1,9 @@
 use std::env;
 
-const DEFAULT_APP_DISPLAY_NAME: &str = "CC Switch";
-const DEFAULT_APP_CONFIG_DIR_NAME: &str = ".cc-switch";
-const DEFAULT_DEEPLINK_SCHEME: &str = "ccswitch";
-const DEFAULT_WEBDAV_REMOTE_ROOT: &str = "cc-switch-sync";
+const DEFAULT_APP_DISPLAY_NAME: &str = "TermPilot";
+const DEFAULT_APP_CONFIG_DIR_NAME: &str = ".termpilot";
+const DEFAULT_DEEPLINK_SCHEME: &str = "termpilot";
+const DEFAULT_WEBDAV_REMOTE_ROOT: &str = "termpilot-sync";
 
 fn resolve_identity_value(
     runtime_key: &str,

@@ -2,15 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- 注册 ccswitchpro:// 自定义 URL 协议，用于深链接导入 -->
+  <!-- 注册 termpilotstudio:// 自定义 URL 协议，用于深链接导入 -->
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
       <key>CFBundleURLName</key>
-      <string>CCswitch Pro Deep Link</string>
+      <string>TermPilot Studio Deep Link</string>
       <key>CFBundleURLSchemes</key>
       <array>
-        <string>ccswitchpro</string>
+        <string>termpilotstudio</string>
       </array>
     </dict>
   </array>

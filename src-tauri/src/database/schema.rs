@@ -276,6 +276,11 @@ impl Database {
                 target TEXT NOT NULL,
                 provider_name TEXT NOT NULL,
                 host_app TEXT NOT NULL DEFAULT 'claude',
+                route_policy TEXT NOT NULL DEFAULT 'manual-dispatch',
+                task_kind TEXT NOT NULL DEFAULT 'general',
+                reasoning_level TEXT NOT NULL DEFAULT 'medium',
+                runtime_mode TEXT NOT NULL DEFAULT 'background',
+                callback_mode TEXT NOT NULL DEFAULT 'manual',
                 cwd TEXT NOT NULL,
                 task_preview TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
@@ -364,6 +369,36 @@ impl Database {
 
         // 确保 alias 列存在（向后兼容旧数据库）
         Self::add_column_if_missing(conn, "providers", "alias", "TEXT")?;
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "route_policy",
+            "TEXT NOT NULL DEFAULT 'manual-dispatch'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "task_kind",
+            "TEXT NOT NULL DEFAULT 'general'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "reasoning_level",
+            "TEXT NOT NULL DEFAULT 'medium'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "runtime_mode",
+            "TEXT NOT NULL DEFAULT 'background'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "callback_mode",
+            "TEXT NOT NULL DEFAULT 'manual'",
+        )?;
 
         // 删除旧的 failover_queue 表（如果存在）
         let _ = conn.execute("DROP INDEX IF EXISTS idx_failover_queue_order", []);
@@ -439,6 +474,11 @@ impl Database {
                         log::info!("迁移数据库从 v6 到 v7（Dispatch runs 注册表）");
                         Self::migrate_v6_to_v7(conn)?;
                         Self::set_user_version(conn, 7)?;
+                    }
+                    7 => {
+                        log::info!("迁移数据库从 v7 到 v8（Agent runtime 元数据）");
+                        Self::migrate_v7_to_v8(conn)?;
+                        Self::set_user_version(conn, 8)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1133,6 +1173,40 @@ impl Database {
         .map_err(|e| AppError::Database(format!("创建 dispatch_runs 时间索引失败: {e}")))?;
 
         log::info!("v6 -> v7 迁移完成：已添加 Dispatch runs 注册表");
+        Ok(())
+    }
+
+    fn migrate_v7_to_v8(conn: &Connection) -> Result<(), AppError> {
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "route_policy",
+            "TEXT NOT NULL DEFAULT 'manual-dispatch'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "task_kind",
+            "TEXT NOT NULL DEFAULT 'general'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "reasoning_level",
+            "TEXT NOT NULL DEFAULT 'medium'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "runtime_mode",
+            "TEXT NOT NULL DEFAULT 'background'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "dispatch_runs",
+            "callback_mode",
+            "TEXT NOT NULL DEFAULT 'manual'",
+        )?;
         Ok(())
     }
 

@@ -5,7 +5,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::app_config::{AppType, InstalledSkill, SkillApps};
-use crate::config::{get_app_config_dir, get_claude_settings_path, read_json_file, write_json_file};
+use crate::config::{
+    get_app_config_dir, get_claude_settings_path, get_home_dir, read_json_file, write_json_file,
+};
 use crate::database::Database;
 use crate::error::AppError;
 use crate::services::skill::SkillService;
@@ -14,7 +16,12 @@ const DISPATCH_SKILL_ID: &str = "builtin:dispatch-task";
 const DISPATCH_SKILL_NAME: &str = "dispatch-task";
 const DISPATCH_SKILL_DIRECTORY: &str = "dispatch-task";
 const DISPATCH_SKILL_DESCRIPTION: &str =
-    "Run a subtask on a Claude or Codex provider configured in cc-switch, inspect dispatch status/history from Claude Code, and optionally wait for the result in the current Claude Code session.";
+    "Legacy compatibility skill for running a child task on a Claude or Codex provider, inspecting runtime history, and optionally waiting in the current Claude Code session.";
+const AGENT_SKILL_ID: &str = "builtin:agent";
+const AGENT_SKILL_NAME: &str = "agent";
+const AGENT_SKILL_DIRECTORY: &str = "agent";
+const AGENT_SKILL_DESCRIPTION: &str =
+    "Plan or run a child agent with suggested routing, terminal-first runtime modes, and Claude/Codex execution policies.";
 
 const DISPATCH_SKILL_FILES: &[(&str, &str)] = &[
     (
@@ -23,6 +30,21 @@ const DISPATCH_SKILL_FILES: &[(&str, &str)] = &[
     ),
     (
         "scripts/dispatch.py",
+        include_str!("../../src/skills/task-dispatcher/scripts/dispatch.py"),
+    ),
+    (
+        "scripts/statusline.py",
+        include_str!("../../src/skills/task-dispatcher/scripts/statusline.py"),
+    ),
+];
+
+const AGENT_SKILL_FILES: &[(&str, &str)] = &[
+    (
+        "SKILL.md",
+        include_str!("../../src/skills/agent-workbench/SKILL.md"),
+    ),
+    (
+        "scripts/agent.py",
         include_str!("../../src/skills/task-dispatcher/scripts/dispatch.py"),
     ),
     (
@@ -45,31 +67,63 @@ const STALE_DISPATCH_SKILL_FILES: &[&str] = &[
 const APP_CONFIG_DIR_PLACEHOLDER: &str = "__CCSWITCH_APP_CONFIG_DIR__";
 
 pub fn ensure_dispatch_task_skill(db: &Arc<Database>) -> Result<InstalledSkill, AppError> {
+    let dispatch_skill = ensure_builtin_skill(
+        db,
+        DISPATCH_SKILL_ID,
+        DISPATCH_SKILL_NAME,
+        DISPATCH_SKILL_DIRECTORY,
+        DISPATCH_SKILL_DESCRIPTION,
+        DISPATCH_SKILL_FILES,
+        STALE_DISPATCH_SKILL_FILES,
+    )?;
+    let _agent_skill = ensure_builtin_skill(
+        db,
+        AGENT_SKILL_ID,
+        AGENT_SKILL_NAME,
+        AGENT_SKILL_DIRECTORY,
+        AGENT_SKILL_DESCRIPTION,
+        AGENT_SKILL_FILES,
+        STALE_DISPATCH_SKILL_FILES,
+    )?;
+    ensure_agent_cli_launcher()?;
+    ensure_dispatch_status_line()?;
+
+    Ok(dispatch_skill)
+}
+
+fn ensure_builtin_skill(
+    db: &Arc<Database>,
+    skill_id: &str,
+    skill_name: &str,
+    skill_directory: &str,
+    skill_description: &str,
+    skill_files: &[(&str, &str)],
+    stale_files: &[&str],
+) -> Result<InstalledSkill, AppError> {
     let installed_skills = db.get_all_installed_skills()?;
     if let Some(conflict) = installed_skills.values().find(|skill| {
-        skill.directory.eq_ignore_ascii_case(DISPATCH_SKILL_DIRECTORY)
-            && skill.id != DISPATCH_SKILL_ID
+        skill.directory.eq_ignore_ascii_case(skill_directory) && skill.id != skill_id
     }) {
         return Err(AppError::Message(format!(
-            "Cannot install builtin dispatch skill because '{}' is already used by '{}' ({})",
-            DISPATCH_SKILL_DIRECTORY, conflict.name, conflict.id
+            "Cannot install builtin skill because '{}' is already used by '{}' ({})",
+            skill_directory, conflict.name, conflict.id
         )));
     }
 
     let ssot_dir = SkillService::get_ssot_dir().map_err(anyhow_to_app_error)?;
-    let skill_dir = ssot_dir.join(DISPATCH_SKILL_DIRECTORY);
-    write_dispatch_skill_files(&skill_dir)?;
+    let skill_dir = ssot_dir.join(skill_directory);
+    write_builtin_skill_files(&skill_dir, skill_files, stale_files)?;
 
     let installed_at = db
-        .get_installed_skill(DISPATCH_SKILL_ID)?
+        .get_installed_skill(skill_id)?
         .map(|skill| skill.installed_at)
         .unwrap_or_else(|| Utc::now().timestamp());
 
     let skill = InstalledSkill {
-        id: DISPATCH_SKILL_ID.to_string(),
-        name: DISPATCH_SKILL_NAME.to_string(),
-        description: Some(DISPATCH_SKILL_DESCRIPTION.to_string()),
-        directory: DISPATCH_SKILL_DIRECTORY.to_string(),
+        id: skill_id.to_string(),
+        name: skill_name.to_string(),
+        description: Some(skill_description.to_string()),
+        directory: skill_directory.to_string(),
         repo_owner: None,
         repo_name: None,
         repo_branch: None,
@@ -79,26 +133,28 @@ pub fn ensure_dispatch_task_skill(db: &Arc<Database>) -> Result<InstalledSkill, 
     };
 
     db.save_skill(&skill)?;
-    SkillService::sync_to_app_dir(DISPATCH_SKILL_DIRECTORY, &AppType::Claude)
-        .map_err(anyhow_to_app_error)?;
-    ensure_dispatch_status_line()?;
+    SkillService::sync_to_app_dir(skill_directory, &AppType::Claude).map_err(anyhow_to_app_error)?;
 
     Ok(skill)
 }
 
-fn write_dispatch_skill_files(skill_dir: &Path) -> Result<(), AppError> {
+fn write_builtin_skill_files(
+    skill_dir: &Path,
+    skill_files: &[(&str, &str)],
+    stale_files: &[&str],
+) -> Result<(), AppError> {
     fs::create_dir_all(skill_dir).map_err(|err| AppError::io(skill_dir, err))?;
     let app_config_dir =
         crate::config::get_app_config_dir().to_string_lossy().replace('\\', "\\\\");
 
-    for relative_path in STALE_DISPATCH_SKILL_FILES {
+    for relative_path in stale_files {
         let stale_path = skill_dir.join(relative_path);
         if stale_path.exists() {
             fs::remove_file(&stale_path).map_err(|err| AppError::io(&stale_path, err))?;
         }
     }
 
-    for (relative_path, contents) in DISPATCH_SKILL_FILES {
+    for (relative_path, contents) in skill_files {
         let path = skill_dir.join(relative_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|err| AppError::io(parent, err))?;
@@ -114,6 +170,39 @@ fn write_dispatch_skill_files(skill_dir: &Path) -> Result<(), AppError> {
         if needs_write {
             fs::write(&path, rendered_contents).map_err(|err| AppError::io(&path, err))?;
         }
+    }
+
+    Ok(())
+}
+
+fn ensure_agent_cli_launcher() -> Result<(), AppError> {
+    let cli_dir = get_app_config_dir().join("cli");
+    fs::create_dir_all(&cli_dir).map_err(|err| AppError::io(&cli_dir, err))?;
+
+    let app_config_dir = get_app_config_dir().to_string_lossy().replace('\\', "\\\\");
+    let engine_path = cli_dir.join("agent.py");
+    let rendered = include_str!("../../src/skills/task-dispatcher/scripts/dispatch.py")
+        .replace(APP_CONFIG_DIR_PLACEHOLDER, &app_config_dir);
+    fs::write(&engine_path, rendered).map_err(|err| AppError::io(&engine_path, err))?;
+
+    let launcher_dir = get_home_dir().join(".local").join("bin");
+    fs::create_dir_all(&launcher_dir).map_err(|err| AppError::io(&launcher_dir, err))?;
+    let launcher_path = launcher_dir.join("agent");
+    let launcher = format!(
+        "#!/bin/sh\nexport CCSWITCH_AGENT_ENTRYPOINT=agent\nexec python3 '{}' \"$@\"\n",
+        engine_path.display()
+    );
+    fs::write(&launcher_path, launcher).map_err(|err| AppError::io(&launcher_path, err))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&launcher_path)
+            .map_err(|err| AppError::io(&launcher_path, err))?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&launcher_path, permissions)
+            .map_err(|err| AppError::io(&launcher_path, err))?;
     }
 
     Ok(())
@@ -160,7 +249,12 @@ mod tests {
         let _guard = EnvGuard::set("/tmp/ccswitch-skill-home", ".ccswitch-pro");
 
         let temp_dir = tempfile::tempdir().expect("create temp dir");
-        write_dispatch_skill_files(temp_dir.path()).expect("write dispatch skill");
+        write_builtin_skill_files(
+            temp_dir.path(),
+            DISPATCH_SKILL_FILES,
+            STALE_DISPATCH_SKILL_FILES,
+        )
+        .expect("write dispatch skill");
 
         let dispatch = std::fs::read_to_string(temp_dir.path().join("scripts/dispatch.py"))
             .expect("read dispatch.py");

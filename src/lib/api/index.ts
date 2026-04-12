@@ -11,6 +11,7 @@ export { proxyApi } from "./proxy";
 export { openclawApi } from "./openclaw";
 export { sessionsApi } from "./sessions";
 export { workspaceApi } from "./workspace";
+export { agentApi } from "./agent";
 export * as configApi from "./config";
 export * as authApi from "./auth";
 export * as codexAuthApi from "./codexAuth";

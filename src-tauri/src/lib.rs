@@ -16,6 +16,7 @@ mod error;
 mod gemini_config;
 mod gemini_mcp;
 mod init_status;
+mod legacy_import;
 mod mcp;
 mod openclaw_config;
 mod opencode_config;
@@ -313,6 +314,9 @@ pub fn run() {
             }
 
             // 初始化数据库
+            if let Err(err) = crate::legacy_import::bootstrap_legacy_app_dir() {
+                log::warn!("Failed to bootstrap legacy app dir: {err}");
+            }
             let app_config_dir = crate::config::get_app_config_dir();
             let db_path = app_config_dir.join("cc-switch.db");
             let json_path = app_config_dir.join("config.json");
@@ -1049,6 +1053,8 @@ pub fn run() {
             commands::delete_session,
             commands::launch_session_terminal,
             commands::get_dispatch_status,
+            commands::get_agent_overview,
+            commands::plan_agent_route,
             commands::get_tool_versions,
             // Provider terminal
             commands::open_provider_terminal,

@@ -357,6 +357,50 @@ export interface DispatchStatusSnapshot {
   lastRun?: DispatchStatusRun | null;
 }
 
+export interface AgentPlan {
+  routePolicy: string;
+  taskKind: string;
+  reasoningLevel: string;
+  costTier: string;
+  preferredRuntime: string;
+  recommendedTarget: string;
+  recommendedProviderName: string;
+  fallbackChain: string[];
+  explanation: string;
+}
+
+export interface AgentRunRecord {
+  runId: string;
+  target: string;
+  providerName: string;
+  hostApp: string;
+  routePolicy: string;
+  taskKind: string;
+  reasoningLevel: string;
+  runtimeMode: string;
+  callbackMode: string;
+  cwd: string;
+  taskPreview: string;
+  status: string;
+  timeoutSeconds: number;
+  startedAt: number;
+  updatedAt: number;
+  finishedAt?: number | null;
+  exitCode?: number | null;
+  durationMs?: number | null;
+  timedOut: boolean;
+  cancelled: boolean;
+  resultPreview: string;
+  result: string;
+  stdout: string;
+  stderr: string;
+}
+
+export interface AgentOverview {
+  status: DispatchStatusSnapshot;
+  runs: AgentRunRecord[];
+}
+
 // MCP 服务器连接参数（宽松：允许扩展字段）
 export interface McpServerSpec {
   // 可选：社区常见 .mcp.json 中 stdio 配置可不写 type
